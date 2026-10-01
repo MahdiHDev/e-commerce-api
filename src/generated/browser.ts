@@ -37,38 +37,3 @@ export type Account = Prisma.AccountModel
  * 
  */
 export type Verification = Prisma.VerificationModel
-/**
- * Model Admin
- * 
- */
-export type Admin = Prisma.AdminModel
-/**
- * Model Employee
- * 
- */
-export type Employee = Prisma.EmployeeModel
-/**
- * Model Class
- * 
- */
-export type Class = Prisma.ClassModel
-/**
- * Model Address
- * 
- */
-export type Address = Prisma.AddressModel
-/**
- * Model Sequence
- * 
- */
-export type Sequence = Prisma.SequenceModel
-/**
- * Model GuardianInfo
- * 
- */
-export type GuardianInfo = Prisma.GuardianInfoModel
-/**
- * Model Student
- * 
- */
-export type Student = Prisma.StudentModel

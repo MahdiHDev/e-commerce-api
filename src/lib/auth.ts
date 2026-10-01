@@ -1,11 +1,11 @@
 import { betterAuth } from "better-auth";
 import { prismaAdapter } from "better-auth/adapters/prisma";
-// import { Role, UserStatus } from "../../generated/prisma/enums";
 import { bearer } from "better-auth/plugins";
 import { emailOTP } from "better-auth/plugins/email-otp";
-import { UserRole, UserStatus } from "../../generated/enums";
-import { envVars } from "../config/env";
-import { sendEmail } from "../utils/email";
+
+import { envVars } from "../app/config/env";
+import { sendEmail } from "../app/utils/email";
+import { UserRole, UserStatus } from "../generated/enums";
 import { prisma } from "./prisma";
 // If your Prisma file is located elsewhere, you can change the path
 
@@ -32,7 +32,7 @@ export const auth: any = betterAuth({
             role: {
                 type: "string",
                 required: true,
-                defaultValue: UserRole.STUDENT,
+                defaultValue: UserRole.USER,
             },
 
             status: {
@@ -81,7 +81,7 @@ export const auth: any = betterAuth({
                         return;
                     }
 
-                    if (user && user.role === UserRole.SUPER_ADMIN) {
+                    if (user && user.role === UserRole.ADMIN) {
                         console.log(
                             `User with email ${email} is a super admin. Skipping sending verification OTP.`,
                         );

@@ -27,9 +27,9 @@ import { NextFunction, Request, Response } from "express";
 import status from "http-status";
 
 import { UserRole } from "../../generated/enums";
+import { prisma } from "../../lib/prisma";
 import { envVars } from "../config/env";
 import AppError from "../errorHelpers/AppError";
-import { prisma } from "../lib/prisma";
 import { jwtUtils } from "../utils/jwt";
 
 export const checkAuth =
@@ -80,8 +80,8 @@ export const checkAuth =
                 throw new AppError(status.UNAUTHORIZED, "User deleted.");
             }
 
-            if (user.status === "BLOCKED" || user.status === "DELETED") {
-                throw new AppError(status.UNAUTHORIZED, "User inactive.");
+            if (user.status === "BANNED") {
+                throw new AppError(status.UNAUTHORIZED, "User banned.");
             }
 
             if (authRoles.length && !authRoles.includes(user.role)) {

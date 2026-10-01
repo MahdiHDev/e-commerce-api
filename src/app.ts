@@ -4,10 +4,9 @@ import cors from "cors";
 import express, { Application, Request, Response } from "express";
 import path from "path";
 import qs from "qs";
-import { auth } from "./app/lib/auth";
 import { globalErrorHandler } from "./app/middleware/globalErrorHandler";
 import { notFound } from "./app/middleware/notFound";
-import routes from "./app/routes";
+import { auth } from "./lib/auth";
 
 const app: Application = express();
 app.set("query parser", (str: string) => qs.parse(str));
@@ -44,7 +43,7 @@ app.use(express.urlencoded({ extended: true }));
 
 // ========================== Connect Routes ==========================
 // app.use("/api/v1", IndexRoutes);
-app.use("/api/v1", routes);
+// app.use("/api/v1", routes);
 
 // Basic route
 app.get("/", async (req: Request, res: Response) => {

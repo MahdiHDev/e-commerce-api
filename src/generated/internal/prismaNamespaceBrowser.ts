@@ -54,14 +54,7 @@ export const ModelName = {
   User: 'User',
   Session: 'Session',
   Account: 'Account',
-  Verification: 'Verification',
-  Admin: 'Admin',
-  Employee: 'Employee',
-  Class: 'Class',
-  Address: 'Address',
-  Sequence: 'Sequence',
-  GuardianInfo: 'GuardianInfo',
-  Student: 'Student'
+  Verification: 'Verification'
 } as const
 
 export type ModelName = (typeof ModelName)[keyof typeof ModelName]
@@ -84,15 +77,15 @@ export const UserScalarFieldEnum = {
   id: 'id',
   name: 'name',
   email: 'email',
+  emailVerified: 'emailVerified',
+  image: 'image',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt',
   role: 'role',
   status: 'status',
   needPasswordChange: 'needPasswordChange',
   isDeleted: 'isDeleted',
-  deletedAt: 'deletedAt',
-  emailVerified: 'emailVerified',
-  image: 'image',
-  createdAt: 'createdAt',
-  updatedAt: 'updatedAt'
+  deletedAt: 'deletedAt'
 } as const
 
 export type UserScalarFieldEnum = (typeof UserScalarFieldEnum)[keyof typeof UserScalarFieldEnum]
@@ -141,173 +134,6 @@ export const VerificationScalarFieldEnum = {
 } as const
 
 export type VerificationScalarFieldEnum = (typeof VerificationScalarFieldEnum)[keyof typeof VerificationScalarFieldEnum]
-
-
-export const AdminScalarFieldEnum = {
-  id: 'id',
-  name: 'name',
-  email: 'email',
-  profilePhoto: 'profilePhoto',
-  contactNumber: 'contactNumber',
-  isDeleted: 'isDeleted',
-  createdAt: 'createdAt',
-  updatedAt: 'updatedAt',
-  deletedAt: 'deletedAt',
-  userId: 'userId'
-} as const
-
-export type AdminScalarFieldEnum = (typeof AdminScalarFieldEnum)[keyof typeof AdminScalarFieldEnum]
-
-
-export const EmployeeScalarFieldEnum = {
-  id: 'id',
-  userId: 'userId',
-  phone: 'phone',
-  fullName: 'fullName',
-  nid: 'nid',
-  fatherName: 'fatherName',
-  motherName: 'motherName',
-  emergencyContact: 'emergencyContact',
-  monthlySalary: 'monthlySalary',
-  employeeId: 'employeeId',
-  picture: 'picture',
-  picturePublicId: 'picturePublicId',
-  pictureName: 'pictureName',
-  pictureType: 'pictureType',
-  experience: 'experience',
-  experiencePublicId: 'experiencePublicId',
-  experienceName: 'experienceName',
-  experienceType: 'experienceType',
-  authoritySign: 'authoritySign',
-  authoritySignPublicId: 'authoritySignPublicId',
-  authoritySignName: 'authoritySignName',
-  authoritySignType: 'authoritySignType',
-  employeeSign: 'employeeSign',
-  employeeSignPublicId: 'employeeSignPublicId',
-  employeeSignName: 'employeeSignName',
-  employeeSignType: 'employeeSignType',
-  gender: 'gender',
-  bloodGroup: 'bloodGroup',
-  religion: 'religion',
-  employeeRole: 'employeeRole',
-  dateOfJoining: 'dateOfJoining',
-  isdeleted: 'isdeleted',
-  createdAt: 'createdAt',
-  updatedAt: 'updatedAt',
-  deletedAt: 'deletedAt'
-} as const
-
-export type EmployeeScalarFieldEnum = (typeof EmployeeScalarFieldEnum)[keyof typeof EmployeeScalarFieldEnum]
-
-
-export const ClassScalarFieldEnum = {
-  id: 'id',
-  name: 'name',
-  monthlyTuitionFee: 'monthlyTuitionFee',
-  classTeacher: 'classTeacher',
-  isDeleted: 'isDeleted',
-  createdAt: 'createdAt',
-  updatedAt: 'updatedAt',
-  deletedAt: 'deletedAt'
-} as const
-
-export type ClassScalarFieldEnum = (typeof ClassScalarFieldEnum)[keyof typeof ClassScalarFieldEnum]
-
-
-export const AddressScalarFieldEnum = {
-  id: 'id',
-  studentId: 'studentId',
-  employeeId: 'employeeId',
-  permanentAddressVillage: 'permanentAddressVillage',
-  permanentAddressPostOffice: 'permanentAddressPostOffice',
-  permanentAddressPostCode: 'permanentAddressPostCode',
-  permanentAddressDistrict: 'permanentAddressDistrict',
-  presentAddressVillage: 'presentAddressVillage',
-  presentAddressPostOffice: 'presentAddressPostOffice',
-  presentAddressPostCode: 'presentAddressPostCode',
-  presentAddressDistrict: 'presentAddressDistrict',
-  isDeleted: 'isDeleted',
-  createdAt: 'createdAt',
-  updatedAt: 'updatedAt',
-  deletedAt: 'deletedAt'
-} as const
-
-export type AddressScalarFieldEnum = (typeof AddressScalarFieldEnum)[keyof typeof AddressScalarFieldEnum]
-
-
-export const SequenceScalarFieldEnum = {
-  id: 'id',
-  current: 'current'
-} as const
-
-export type SequenceScalarFieldEnum = (typeof SequenceScalarFieldEnum)[keyof typeof SequenceScalarFieldEnum]
-
-
-export const GuardianInfoScalarFieldEnum = {
-  id: 'id',
-  studentId: 'studentId',
-  whatsappNumber: 'whatsappNumber',
-  fatherName: 'fatherName',
-  fatherNameBangla: 'fatherNameBangla',
-  fatherMobileNumber: 'fatherMobileNumber',
-  fatherOccupation: 'fatherOccupation',
-  motherName: 'motherName',
-  motherNameBangla: 'motherNameBangla',
-  motherMobileNumber: 'motherMobileNumber',
-  motherOccupation: 'motherOccupation',
-  nameOfLocalGuardian: 'nameOfLocalGuardian',
-  relationShipOfStudent: 'relationShipOfStudent',
-  GuardianMobileNumber: 'GuardianMobileNumber',
-  isdeleted: 'isdeleted',
-  createdAt: 'createdAt',
-  updatedAt: 'updatedAt',
-  deletedAt: 'deletedAt'
-} as const
-
-export type GuardianInfoScalarFieldEnum = (typeof GuardianInfoScalarFieldEnum)[keyof typeof GuardianInfoScalarFieldEnum]
-
-
-export const StudentScalarFieldEnum = {
-  id: 'id',
-  userId: 'userId',
-  classId: 'classId',
-  studentId: 'studentId',
-  fullName: 'fullName',
-  fullNameBangla: 'fullNameBangla',
-  dateOfBirth: 'dateOfBirth',
-  birthRegistrationNumber: 'birthRegistrationNumber',
-  religion: 'religion',
-  admissionTotalFees: 'admissionTotalFees',
-  admissionDate: 'admissionDate',
-  gender: 'gender',
-  bloodGroup: 'bloodGroup',
-  previousInstituteName: 'previousInstituteName',
-  endingClass: 'endingClass',
-  result: 'result',
-  testimonialNumber: 'testimonialNumber',
-  studentSign: 'studentSign',
-  studentSignPublicId: 'studentSignPublicId',
-  studentsignName: 'studentsignName',
-  studentSignType: 'studentSignType',
-  authoritySign: 'authoritySign',
-  authoritySignPublicId: 'authoritySignPublicId',
-  authoritySignName: 'authoritySignName',
-  authoritySignType: 'authoritySignType',
-  guardianSign: 'guardianSign',
-  guardianSignPublicId: 'guardianSignPublicId',
-  guardianSignName: 'guardianSignName',
-  guardianSignType: 'guardianSignType',
-  picture: 'picture',
-  picturePublicId: 'picturePublicId',
-  pictureName: 'pictureName',
-  pictureType: 'pictureType',
-  isdeleted: 'isdeleted',
-  createdAt: 'createdAt',
-  updatedAt: 'updatedAt',
-  deletedAt: 'deletedAt'
-} as const
-
-export type StudentScalarFieldEnum = (typeof StudentScalarFieldEnum)[keyof typeof StudentScalarFieldEnum]
 
 
 export const SortOrder = {

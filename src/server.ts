@@ -1,18 +1,9 @@
 import app from "./app";
 import { envVars } from "./app/config/env";
-import { prisma } from "./app/lib/prisma";
-import {
-    seedEmployeeSequence,
-    seedStudentSequence,
-    seedSuperAdmin,
-} from "./app/utils/seed";
+import { prisma } from "./lib/prisma";
 
 const bootstrap = async () => {
     try {
-        await seedSuperAdmin();
-        await seedEmployeeSequence();
-        await seedStudentSequence();
-
         await prisma.$connect();
         app.listen(envVars.PORT, () => {
             console.log(
