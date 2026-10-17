@@ -21,6 +21,13 @@ export const auth: any = betterAuth({
         requireEmailVerification: true,
     },
 
+    socialProviders: {
+        google: {
+            clientId: envVars.GOOGLE_CLIENT_ID,
+            clientSecret: envVars.GOOGLE_CLIENT_SECRET,
+        },
+    },
+
     emailVerification: {
         sendOnSignUp: true,
         sendOnSignIn: true,
@@ -83,15 +90,15 @@ export const auth: any = betterAuth({
 
                     if (user && user.role === UserRole.ADMIN) {
                         console.log(
-                            `User with email ${email} is a super admin. Skipping sending verification OTP.`,
+                            `User with email ${email} is Admin. Skipping sending verification OTP.`,
                         );
                         return;
                     }
 
                     if (user && !user.emailVerified) {
-                        sendEmail({
+                        await sendEmail({
                             to: email,
-                            subject: "Verify your email",
+                            subject: "Verify Email OTP",
                             templateName: "otp",
                             templateData: {
                                 name: user.name,
@@ -107,7 +114,7 @@ export const auth: any = betterAuth({
                     });
 
                     if (user) {
-                        sendEmail({
+                        await sendEmail({
                             to: email,
                             subject: "Password Reset OTP",
                             templateName: "otp",

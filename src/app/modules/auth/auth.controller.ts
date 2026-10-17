@@ -6,6 +6,18 @@ import { sendResponse } from "../../shared/sendResponse";
 import { tokenUtils } from "../../utils/token";
 import { AuthService } from "./auth.service";
 
+const registerUser = catchAsync(async (req: Request, res: Response) => {
+    const payload = req.body;
+    const result = await AuthService.registerUser(payload);
+
+    sendResponse(res, {
+        httpStatusCode: status.CREATED,
+        success: true,
+        message: "User registered successfully",
+        data: result,
+    });
+});
+
 const loginUser = catchAsync(async (req: Request, res: Response) => {
     const payload = req.body;
     const result = await AuthService.loginUser(payload);
@@ -25,6 +37,17 @@ const loginUser = catchAsync(async (req: Request, res: Response) => {
             refreshToken,
             ...rest,
         },
+    });
+});
+
+const verifyEmail = catchAsync(async (req: Request, res: Response) => {
+    const { email, otp } = req.body;
+    await AuthService.verifyEmail(email, otp);
+
+    sendResponse(res, {
+        httpStatusCode: status.OK,
+        success: true,
+        message: "Email verified successfully",
     });
 });
 
@@ -95,7 +118,9 @@ export const getMe = async (req: Request, res: Response) => {
 };
 
 export const AuthController = {
+    registerUser,
     loginUser,
+    verifyEmail,
     changePassword,
     forgetPassword,
     resetPassword,

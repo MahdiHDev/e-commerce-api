@@ -43,7 +43,10 @@ export const sendEmail = async ({
             `src/app/templates/${templateName}.ejs`,
         );
 
-        const html = await ejs.renderFile(templatePath, templateData);
+        const html = await ejs.renderFile(templatePath, {
+            ...templateData,
+            subject,
+        });
 
         const info = await transporter.sendMail({
             from: envVars.EMAIL_SENDER.SMTP_FROM,
