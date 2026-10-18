@@ -66,7 +66,9 @@ export const ModelName = {
   CartItem: 'CartItem',
   Order: 'Order',
   OrderItem: 'OrderItem',
-  Payment: 'Payment'
+  Payment: 'Payment',
+  Collection: 'Collection',
+  ProductCollection: 'ProductCollection'
 } as const
 
 export type ModelName = (typeof ModelName)[keyof typeof ModelName]
@@ -342,6 +344,29 @@ export const PaymentScalarFieldEnum = {
 } as const
 
 export type PaymentScalarFieldEnum = (typeof PaymentScalarFieldEnum)[keyof typeof PaymentScalarFieldEnum]
+
+
+export const CollectionScalarFieldEnum = {
+  id: 'id',
+  name: 'name',
+  slug: 'slug',
+  description: 'description',
+  imageUrl: 'imageUrl',
+  isActive: 'isActive',
+  createdAt: 'createdAt',
+  updatedAt: 'updatedAt'
+} as const
+
+export type CollectionScalarFieldEnum = (typeof CollectionScalarFieldEnum)[keyof typeof CollectionScalarFieldEnum]
+
+
+export const ProductCollectionScalarFieldEnum = {
+  productId: 'productId',
+  collectionId: 'collectionId',
+  createdAt: 'createdAt'
+} as const
+
+export type ProductCollectionScalarFieldEnum = (typeof ProductCollectionScalarFieldEnum)[keyof typeof ProductCollectionScalarFieldEnum]
 
 
 export const SortOrder = {

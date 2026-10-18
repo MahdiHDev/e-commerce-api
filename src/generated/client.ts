@@ -121,3 +121,13 @@ export type OrderItem = Prisma.OrderItemModel
  * 
  */
 export type Payment = Prisma.PaymentModel
+/**
+ * Model Collection
+ * 
+ */
+export type Collection = Prisma.CollectionModel
+/**
+ * Model ProductCollection
+ * 
+ */
+export type ProductCollection = Prisma.ProductCollectionModel
