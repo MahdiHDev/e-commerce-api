@@ -69,7 +69,9 @@ export class QueryBuilder<
 
                             return {
                                 [relation!]: {
-                                    [nestedField!]: stringFilter,
+                                    some: {
+                                        [nestedField!]: stringFilter,
+                                    },
                                 },
                             };
                         } else if (parts.length === 3) {

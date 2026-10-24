@@ -1,10 +1,12 @@
 import app from "./app";
 import { envVars } from "./app/config/env";
+import { seedAdmin } from "./app/utils/seed";
 import { prisma } from "./lib/prisma";
 
 const bootstrap = async () => {
     try {
         await prisma.$connect();
+        await seedAdmin();
         app.listen(envVars.PORT, () => {
             console.log(
                 `Server is running on http://localhost:${envVars.PORT}`,

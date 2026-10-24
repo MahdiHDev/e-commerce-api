@@ -152,7 +152,7 @@ model Address {
 }
 
 model Category {
-    id   String @id @default(cuid())
+    id   String @id @default(uuid())
     name String
     slug String @unique
 
@@ -172,7 +172,7 @@ model Category {
 }
 
 model Product {
-    id          String  @id @default(cuid())
+    id          String  @id @default(uuid())
     name        String
     slug        String  @unique
     description String?
@@ -201,7 +201,7 @@ model Product {
 }
 
 model ProductVariant {
-    id String @id @default(cuid())
+    id String @id @default(uuid())
 
     productId String
     product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
@@ -229,7 +229,7 @@ model ProductVariant {
 }
 
 model ProductImage {
-    id String @id @default(cuid())
+    id String @id @default(uuid())
 
     productId String
     product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
@@ -247,7 +247,7 @@ model ProductImage {
 }
 
 model ProductVariantImage {
-    id String @id @default(cuid())
+    id String @id @default(uuid())
 
     variantId String
     variant   ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
@@ -265,7 +265,7 @@ model ProductVariantImage {
 }
 
 model Brand {
-    id          String  @id @default(cuid())
+    id          String  @id @default(uuid())
     name        String
     slug        String  @unique
     description String?
@@ -281,7 +281,7 @@ model Brand {
 }
 
 model Cart {
-    id String @id @default(cuid())
+    id String @id @default(uuid())
 
     userId String @unique
     user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -296,7 +296,7 @@ model Cart {
 }
 
 model CartItem {
-    id String @id @default(cuid())
+    id String @id @default(uuid())
 
     cartId String
     cart   Cart   @relation(fields: [cartId], references: [id], onDelete: Cascade)
@@ -317,7 +317,7 @@ model CartItem {
 }
 
 model Order {
-    id String @id @default(cuid())
+    id String @id @default(uuid())
 
     orderNumber String @unique
 
@@ -354,7 +354,7 @@ model Order {
 }
 
 model OrderItem {
-    id String @id @default(cuid())
+    id String @id @default(uuid())
 
     orderId String
     order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
@@ -381,7 +381,7 @@ model OrderItem {
 }
 
 model Payment {
-    id String @id @default(cuid())
+    id String @id @default(uuid())
 
     orderId String
     order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
@@ -407,7 +407,7 @@ model Payment {
 }
 
 model Collection {
-    id          String  @id @default(cuid())
+    id          String  @id @default(uuid())
     name        String
     slug        String  @unique
     description String?
