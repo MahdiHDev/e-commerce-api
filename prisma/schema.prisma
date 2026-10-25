@@ -188,6 +188,7 @@ model Product {
     variants    ProductVariant[]
     images      ProductImage[]
     collections ProductCollection[]
+    colors      ProductColor[]
 
     isDeleted Boolean @default(false)
 
@@ -200,11 +201,37 @@ model Product {
     @@index([status])
 }
 
+model ProductColor {
+    id String @id @default(uuid())
+
+    productId String
+    product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+    name    String
+    hexCode String?
+
+    images   ProductColorImage[]
+    variants ProductVariant[]
+
+    position Int @default(0)
+
+    createdAt DateTime @default(now())
+    updatedAt DateTime @updatedAt
+
+    @@unique([productId, name])
+    @@index([productId])
+}
+
 model ProductVariant {
     id String @id @default(uuid())
 
     productId String
     product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+    colorId String
+    color   ProductColor @relation(fields: [colorId], references: [id])
+
+    size String
 
     sku String @unique
 
@@ -213,11 +240,8 @@ model ProductVariant {
 
     stockQuantity Int @default(0)
 
-    attributes Json?
-
-    productVariantImages ProductVariantImage[]
-    cartItems            CartItem[]
-    orderItems           OrderItem[]
+    cartItems  CartItem[]
+    orderItems OrderItem[]
 
     isDeleted Boolean @default(false)
 
@@ -225,7 +249,9 @@ model ProductVariant {
     updatedAt DateTime  @updatedAt
     deletedAt DateTime?
 
+    @@unique([productId, colorId])
     @@index([productId])
+    @@index([colorId])
 }
 
 model ProductImage {
@@ -234,8 +260,11 @@ model ProductImage {
     productId String
     product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
 
-    url      String
-    position Int    @default(0)
+    url         String
+    position    Int    @default(0)
+    urlPublicId String
+    urlName     String
+    urlType     String
 
     isDeleted Boolean @default(false)
 
@@ -246,22 +275,46 @@ model ProductImage {
     @@index([productId])
 }
 
-model ProductVariantImage {
+// model ProductVariantImage {
+//     id String @id @default(uuid())
+
+//     variantId String
+//     variant   ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+
+//     url      String
+//     position Int    @default(0)
+
+//     publicId  String
+//     imageName String?
+//     imageType String?
+
+//     isDeleted Boolean @default(false)
+
+//     createdAt DateTime  @default(now())
+//     updatedAt DateTime  @updatedAt
+//     deletedAt DateTime?
+
+//     @@index([variantId])
+// }
+
+model ProductColorImage {
     id String @id @default(uuid())
 
-    variantId String
-    variant   ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+    colorId String
+    color   ProductColor @relation(fields: [colorId], references: [id], onDelete: Cascade)
 
-    url      String
-    position Int    @default(0)
+    url       String
+    publicId  String
+    imageName String?
+    imageType String?
 
-    isDeleted Boolean @default(false)
+    position  Int     @default(0)
+    isPrimary Boolean @default(false)
 
-    createdAt DateTime  @default(now())
-    updatedAt DateTime  @updatedAt
-    deletedAt DateTime?
+    createdAt DateTime @default(now())
+    updatedAt DateTime @updatedAt
 
-    @@index([variantId])
+    @@index([colorId])
 }
 
 model Brand {
@@ -269,7 +322,11 @@ model Brand {
     name        String
     slug        String  @unique
     description String?
-    logoUrl     String?
+
+    logoUrl         String?
+    logoUrlPublicId String?
+    logoUrlName     String?
+    logoUrlType     String?
 
     products Product[]
 

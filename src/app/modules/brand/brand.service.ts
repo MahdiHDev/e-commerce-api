@@ -128,7 +128,12 @@ const createBrand = async (
                 name: name.trim(),
                 slug: formattedSlug,
                 ...(description && { description }),
-                ...(brandLogo && { logoUrl: brandLogo.secure_url }),
+                ...(brandLogo && {
+                    logoUrl: brandLogo.secure_url,
+                    logoUrlName: brandLogoFile?.originalname as string,
+                    logoUrlPublicId: brandLogo.public_id,
+                    logoUrlType: brandLogoFile?.mimetype as string,
+                }),
             },
         });
 
@@ -181,6 +186,13 @@ const updateBrand = async (
         });
 
         if (existingSlug) {
+            if (existingSlug.isDeleted) {
+                throw new AppError(
+                    409,
+                    "A deleted brand with this slug already exists. Please restore it instead.",
+                );
+            }
+
             throw new AppError(409, "A brand with this slug already exists.");
         }
     }
@@ -218,9 +230,17 @@ const updateBrand = async (
 
                 ...(brandLogo && {
                     logoUrl: brandLogo.secure_url,
+                    logoUrlName: brandLogoFile?.originalname as string,
+                    logoUrlPublicId: brandLogo.public_id,
+                    logoUrlType: brandLogoFile?.mimetype as string,
                 }),
             },
         });
+
+        // Delete the old logo only after the database update succeeds
+        if (brandLogo && existingBrand.logoUrlPublicId) {
+            await CloudinaryService.delete(existingBrand.logoUrlPublicId);
+        }
 
         return result;
     } catch (error) {
