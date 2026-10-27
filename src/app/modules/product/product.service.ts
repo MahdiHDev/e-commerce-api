@@ -1,232 +1,284 @@
-import { randomUUID } from "node:crypto";
-import { Prisma } from "../../../generated/client";
 import { prisma } from "../../../lib/prisma";
 import { CloudinaryService } from "../../../services/cloudinary";
 import { UploadFile } from "../../../services/cloudinary/cloudinary.interface";
 import { CloudinaryFolders } from "../../config/cloudinary.folders";
 import AppError from "../../errorHelpers/AppError";
-import { generateProductCode } from "../../utils/generateProductCode";
-import { generateVariantSku } from "../../utils/generateSku";
+import { CreateProductPayload } from "./product.validation";
 
 const createProduct = async (
     payload: CreateProductPayload,
     files?: Record<string, UploadFile[]>,
 ) => {
-    const { name, description, categoryId, brandId, status, colors } = payload;
+    const { name, slug, description, categoryId, brandId, status, variants } =
+        payload;
 
     const uploadedPublicIds: string[] = [];
 
-    // Normalize input before validation and persistence
-    const normalizedColors = colors.map((color) => ({
-        ...color,
-        name: color.name.trim(),
-        hexCode: color.hexCode.trim().toUpperCase(),
-        variants: color.variants.map((variant) => ({
-            ...variant,
-            size: variant.size.trim().toUpperCase(),
-        })),
-    }));
+    try {
+        // ------------------------------------------
+        // 1. Format slug
+        // ------------------------------------------
 
-    // 1. Validate category
-    const category = await prisma.category.findFirst({
-        where: {
-            id: categoryId,
-            isDeleted: false,
-        },
-    });
+        const formattedSlug = slug.trim().toLowerCase().replace(/\s+/g, "-");
 
-    if (!category) {
-        throw new AppError(404, "Category not found");
-    }
+        // ------------------------------------------
+        // 2. Check duplicate product slug
+        // ------------------------------------------
 
-    // 2. Validate brand
-    if (brandId) {
-        const brand = await prisma.brand.findFirst({
+        const existingProduct = await prisma.product.findFirst({
             where: {
-                id: brandId,
+                slug: formattedSlug,
+            },
+        });
+
+        if (existingProduct) {
+            if (existingProduct.isDeleted) {
+                throw new AppError(
+                    409,
+                    "A deleted product with this slug already exists. Please restore it instead.",
+                );
+            }
+
+            throw new AppError(409, "A product with this slug already exists.");
+        }
+
+        // ------------------------------------------
+        // 3. Check category
+        // ------------------------------------------
+
+        const category = await prisma.category.findFirst({
+            where: {
+                id: categoryId,
                 isDeleted: false,
             },
         });
 
-        if (!brand) {
-            throw new AppError(404, "Brand not found");
+        if (!category) {
+            throw new AppError(404, "Category not found");
         }
-    }
 
-    // 3. Generate slug
-    const formattedSlug = name.trim().toLowerCase().replace(/\s+/g, "-");
+        // ------------------------------------------
+        // 4. Check brand if provided
+        // ------------------------------------------
 
-    const existingProduct = await prisma.product.findUnique({
-        where: {
-            slug: formattedSlug,
-        },
-    });
+        if (brandId) {
+            const brand = await prisma.brand.findFirst({
+                where: {
+                    id: brandId,
+                    isDeleted: false,
+                },
+            });
 
-    if (existingProduct) {
-        throw new AppError(409, "A product with this slug already exists.");
-    }
-
-    // 4. Validate duplicate colors and sizes
-    const colorNames = normalizedColors.map((color) =>
-        color.name.toLowerCase(),
-    );
-
-    if (new Set(colorNames).size !== colorNames.length) {
-        throw new AppError(400, "Duplicate colors are not allowed");
-    }
-
-    for (const color of normalizedColors) {
-        const sizes = color.variants.map((variant) => variant.size);
-
-        if (new Set(sizes).size !== sizes.length) {
-            throw new AppError(400, `Duplicate sizes found for ${color.name}`);
+            if (!brand) {
+                throw new AppError(404, "Brand not found");
+            }
         }
-    }
 
-    // 5. Validate uploaded file fields
-    for (const fieldName of Object.keys(files ?? {})) {
-        const match = /^colorImages_(\d+)$/.exec(fieldName);
+        // ------------------------------------------
+        // 5. Check duplicate SKUs inside request
+        // ------------------------------------------
 
-        if (!match || Number(match[1]) >= normalizedColors.length) {
+        const skuList = variants.map((variant) => variant.sku);
+
+        const uniqueSkus = new Set(skuList);
+
+        if (skuList.length !== uniqueSkus.size) {
+            throw new AppError(409, "Duplicate SKU found in product variants.");
+        }
+
+        // ------------------------------------------
+        // 6. Check whether SKU already exists
+        // ------------------------------------------
+
+        const existingVariant = await prisma.productVariant.findFirst({
+            where: {
+                sku: {
+                    in: skuList,
+                },
+            },
+        });
+
+        if (existingVariant) {
             throw new AppError(
-                400,
-                `Invalid product image field: ${fieldName}`,
+                409,
+                `Variant with SKU "${existingVariant.sku}" already exists.`,
             );
         }
-    }
 
-    // 6. Generate product code
-    const productCode = generateProductCode(name);
+        // ------------------------------------------
+        // 7. Upload product images
+        // ------------------------------------------
 
-    try {
-        // 7. Upload images for each color
-        const colorsWithImages = [];
+        const productImageFiles = files?.productImages ?? [];
 
-        for (const [colorIndex, color] of normalizedColors.entries()) {
-            const colorFiles = files?.[`colorImages_${colorIndex}`] ?? [];
+        const uploadedProductImages =
+            productImageFiles.length > 0
+                ? await Promise.all(
+                      productImageFiles.map((file) =>
+                          CloudinaryService.upload(file, {
+                              folder: CloudinaryFolders.product.productImage,
+                          }),
+                      ),
+                  )
+                : [];
 
-            const images = [];
+        uploadedProductImages.forEach((image) => {
+            if (image.public_id) {
+                uploadedPublicIds.push(image.public_id);
+            }
+        });
 
-            for (const [imageIndex, file] of colorFiles.entries()) {
-                const uploadedImage = await CloudinaryService.upload(file, {
-                    folder: CloudinaryFolders.product.productColor,
-                });
+        // ------------------------------------------
+        // 8. Upload variant images
+        // ------------------------------------------
 
-                uploadedPublicIds.push(uploadedImage.public_id);
+        const variantImageMap: Record<
+            string,
+            {
+                url: string;
+                position: number;
+            }[]
+        > = {};
 
-                images.push({
-                    url: uploadedImage.secure_url,
-                    publicId: uploadedImage.public_id,
-                    imageName: file.originalname,
-                    imageType: file.mimetype,
-                    position: imageIndex,
-                    isPrimary: imageIndex === 0,
-                });
+        for (const variant of variants) {
+            const variantImageFiles =
+                files?.[`variantImages_${variant.sku}`] ?? [];
+
+            if (variantImageFiles.length === 0) {
+                continue;
             }
 
-            colorsWithImages.push({
-                ...color,
-                images,
+            const uploadedVariantImages = await Promise.all(
+                variantImageFiles.map((file) =>
+                    CloudinaryService.upload(file, {
+                        folder: CloudinaryFolders.product.variantImage,
+                    }),
+                ),
+            );
+
+            uploadedVariantImages.forEach((image) => {
+                if (image.public_id) {
+                    uploadedPublicIds.push(image.public_id);
+                }
             });
+
+            variantImageMap[variant.sku] = uploadedVariantImages.map(
+                (image, index) => ({
+                    url: image.secure_url,
+                    position: index,
+                }),
+            );
         }
 
-        // 8. Create product with Prisma transaction
-        const result = await prisma.$transaction(
-            async (tx) => {
-                // Create product first
-                const product = await tx.product.create({
-                    data: {
-                        name: name.trim(),
-                        slug: formattedSlug,
-                        productCode,
-                        description,
-                        categoryId,
-                        brandId,
-                        status: status ?? "DRAFT",
+        const variantData = variants.map((variant) => {
+            const variantImages = variantImageMap[variant.sku];
+
+            return {
+                sku: variant.sku.trim(),
+
+                price: variant.price,
+
+                ...(variant.compareAtPrice !== undefined && {
+                    compareAtPrice: variant.compareAtPrice,
+                }),
+
+                stockQuantity: variant.stockQuantity,
+
+                attributes: variant.attributes,
+
+                ...(variantImages && variantImages.length > 0
+                    ? {
+                          productVariantImages: {
+                              create: variantImages,
+                          },
+                      }
+                    : {}),
+            };
+        });
+
+        // ------------------------------------------
+        // 9. Create product + variants + images
+        // ------------------------------------------
+
+        const result = await prisma.product.create({
+            data: {
+                name: name.trim(),
+
+                slug: formattedSlug,
+
+                ...(description !== undefined && {
+                    description: description.trim(),
+                }),
+
+                categoryId,
+
+                ...(brandId && {
+                    brandId,
+                }),
+
+                status,
+
+                // Product gallery images
+                ...(uploadedProductImages.length > 0 && {
+                    images: {
+                        create: uploadedProductImages.map((image, index) => ({
+                            url: image.secure_url,
+                            position: index,
+                        })),
                     },
-                });
+                }),
 
-                // Create colors and their images/variants
-                for (const [colorIndex, color] of colorsWithImages.entries()) {
-                    const createdColor = await tx.productColor.create({
-                        data: {
-                            productId: product.id,
-                            name: color.name,
-                            hexCode: color.hexCode,
-                            position: color.position ?? colorIndex,
+                // Product variants
+                variants: {
+                    create: variantData,
+                },
+            },
 
-                            images: {
-                                create: color.images,
-                            },
-                        },
-                    });
-
-                    // Create variants for this color
-                    await tx.productVariant.createMany({
-                        data: color.variants.map((variant) => {
-                            const variantId = randomUUID();
-
-                            return {
-                                id: variantId,
-                                productId: product.id,
-                                colorId: createdColor.id,
-                                size: variant.size,
-
-                                sku: generateVariantSku(
-                                    productCode,
-                                    color.name,
-                                    variant.size,
-                                    variantId,
-                                ),
-
-                                price: new Prisma.Decimal(variant.price),
-
-                                compareAtPrice:
-                                    variant.compareAtPrice == null
-                                        ? null
-                                        : new Prisma.Decimal(
-                                              variant.compareAtPrice,
-                                          ),
-
-                                stockQuantity: variant.stockQuantity,
-                            };
-                        }),
-                    });
-                }
-
-                return tx.product.findUniqueOrThrow({
+            include: {
+                images: {
                     where: {
-                        id: product.id,
+                        isDeleted: false,
                     },
+                    orderBy: {
+                        position: "asc",
+                    },
+                },
+
+                variants: {
+                    where: {
+                        isDeleted: false,
+                    },
+
+                    orderBy: {
+                        createdAt: "asc",
+                    },
+
                     include: {
-                        category: true,
-                        brand: true,
-                        colors: {
+                        productVariantImages: {
+                            where: {
+                                isDeleted: false,
+                            },
+
                             orderBy: {
                                 position: "asc",
                             },
-                            include: {
-                                images: {
-                                    orderBy: {
-                                        position: "asc",
-                                    },
-                                },
-                                variants: true,
-                            },
                         },
                     },
-                });
+                },
+
+                brand: true,
+
+                category: true,
             },
-            {
-                maxWait: 5000,
-                timeout: 15000,
-            },
-        );
+        });
 
         return result;
     } catch (error) {
-        // Delete uploaded images if product creation fails
-        await Promise.allSettled(
+        // ------------------------------------------
+        // Rollback Cloudinary uploads
+        // ------------------------------------------
+
+        await Promise.all(
             uploadedPublicIds.map((publicId) =>
                 CloudinaryService.delete(publicId),
             ),

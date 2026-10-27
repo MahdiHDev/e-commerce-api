@@ -15,5 +15,9 @@ export const CloudinaryFolders = {
         guardianSign: `${ROOT}/students/guardianSign`,
         authoritySign: `${ROOT}/students/AuthoritySign`,
     },
+    product: {
+        productImage: `${ROOT}/products/productImages`,
+        variantImage: `${ROOT}/products/variantImages`,
+    },
     // add more as your project grows
 } as const;
