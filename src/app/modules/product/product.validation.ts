@@ -18,6 +18,7 @@ const productVariantSchema = z.object({
         .min(0, "Stock quantity cannot be negative"),
 
     attributes: z.record(z.string(), z.string().trim().min(1)),
+    imageGroup: z.string().trim().min(1),
 });
 
 export const createProductSchema = z.object({

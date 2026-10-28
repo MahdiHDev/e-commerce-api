@@ -9,7 +9,19 @@ import { createProductSchema } from "./product.validation";
 const createProduct = catchAsync(async (req: Request, res: Response) => {
     const payload = createProductSchema.parse(JSON.parse(req.body.data));
 
-    const files = req.files as Record<string, UploadFile[]>;
+    const uploadedFiles = req.files as (UploadFile & {
+        fieldname: string;
+    })[];
+
+    const files: Record<string, UploadFile[]> = {};
+
+    for (const file of uploadedFiles) {
+        const fieldFiles = files[file.fieldname] ?? [];
+
+        fieldFiles.push(file);
+
+        files[file.fieldname] = fieldFiles;
+    }
 
     const result = await ProductServices.createProduct(payload, files);
 

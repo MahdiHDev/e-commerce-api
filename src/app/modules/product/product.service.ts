@@ -106,21 +106,22 @@ const createProduct = async (
         }
 
         // ------------------------------------------
-        // 7. Upload product images
+        // 7. Validate + upload product images
         // ------------------------------------------
 
         const productImageFiles = files?.productImages ?? [];
 
-        const uploadedProductImages =
-            productImageFiles.length > 0
-                ? await Promise.all(
-                      productImageFiles.map((file) =>
-                          CloudinaryService.upload(file, {
-                              folder: CloudinaryFolders.product.productImage,
-                          }),
-                      ),
-                  )
-                : [];
+        if (productImageFiles.length === 0) {
+            throw new AppError(400, "At least one product image is required.");
+        }
+
+        const uploadedProductImages = await Promise.all(
+            productImageFiles.map((file) =>
+                CloudinaryService.upload(file, {
+                    folder: CloudinaryFolders.product.productImage,
+                }),
+            ),
+        );
 
         uploadedProductImages.forEach((image) => {
             if (image.public_id) {
@@ -132,67 +133,107 @@ const createProduct = async (
         // 8. Upload variant images
         // ------------------------------------------
 
-        const variantImageMap: Record<
-            string,
-            {
-                url: string;
-                position: number;
-            }[]
-        > = {};
+        type VariantImageData = {
+            url: string;
+            name: string;
+            publicId: string;
+            type: string;
+            position: number;
+        };
 
-        for (const variant of variants) {
-            const variantImageFiles =
-                files?.[`variantImages_${variant.sku}`] ?? [];
+        const variantImageMap: Record<string, VariantImageData[]> = {};
 
-            if (variantImageFiles.length === 0) {
-                continue;
+        // Find the unique image groups.
+        const imageGroups = new Set(
+            variants.map((variant) => variant.imageGroup),
+        );
+
+        for (const imageGroup of imageGroups) {
+            const imageFiles = files?.[`variantImages_${imageGroup}`] ?? [];
+
+            if (imageFiles.length === 0) {
+                throw new AppError(
+                    400,
+                    `At least one image is required for image group "${imageGroup}".`,
+                );
             }
 
-            const uploadedVariantImages = await Promise.all(
-                variantImageFiles.map((file) =>
-                    CloudinaryService.upload(file, {
-                        folder: CloudinaryFolders.product.variantImage,
-                    }),
-                ),
-            );
+            const images: VariantImageData[] = [];
 
-            uploadedVariantImages.forEach((image) => {
-                if (image.public_id) {
-                    uploadedPublicIds.push(image.public_id);
+            // Upload each file sequentially so each successful upload
+            // is tracked immediately for rollback.
+            for (const [index, file] of imageFiles.entries()) {
+                if (!file.mimetype) {
+                    throw new AppError(
+                        400,
+                        "Variant image MIME type is missing.",
+                    );
                 }
-            });
 
-            variantImageMap[variant.sku] = uploadedVariantImages.map(
-                (image, index) => ({
-                    url: image.secure_url,
+                const uploaded = await CloudinaryService.upload(file, {
+                    folder: CloudinaryFolders.product.variantImage,
+                });
+
+                if (!uploaded.public_id) {
+                    throw new AppError(
+                        500,
+                        "Uploaded image public ID is missing.",
+                    );
+                }
+
+                uploadedPublicIds.push(uploaded.public_id);
+
+                images.push({
+                    url: uploaded.secure_url,
+                    name: uploaded.original_filename,
+                    publicId: uploaded.public_id,
+                    type: file.mimetype,
                     position: index,
-                }),
-            );
+                });
+            }
+
+            variantImageMap[imageGroup] = images;
         }
 
         const variantData = variants.map((variant) => {
-            const variantImages = variantImageMap[variant.sku];
+            const {
+                imageGroup,
+                sku,
+                price,
+                compareAtPrice,
+                stockQuantity,
+                attributes,
+            } = variant;
+
+            const variantImages = variantImageMap[imageGroup];
+
+            if (!variantImages || variantImages.length === 0) {
+                throw new AppError(
+                    400,
+                    `Images not found for image group "${imageGroup}".`,
+                );
+            }
 
             return {
-                sku: variant.sku.trim(),
+                sku: sku.trim(),
+                price,
 
-                price: variant.price,
-
-                ...(variant.compareAtPrice !== undefined && {
-                    compareAtPrice: variant.compareAtPrice,
+                ...(compareAtPrice !== undefined && {
+                    compareAtPrice,
                 }),
 
-                stockQuantity: variant.stockQuantity,
+                stockQuantity,
+                attributes,
 
-                attributes: variant.attributes,
-
-                ...(variantImages && variantImages.length > 0
-                    ? {
-                          productVariantImages: {
-                              create: variantImages,
-                          },
-                      }
-                    : {}),
+                productVariantImages: {
+                    create: variantImages.map((image) => ({
+                        url: image.url,
+                        name: image.name,
+                        publicId: image.publicId,
+                        type: image.type,
+                        position: image.position,
+                    })),
+                },
             };
         });
 
@@ -219,14 +260,26 @@ const createProduct = async (
                 status,
 
                 // Product gallery images
-                ...(uploadedProductImages.length > 0 && {
-                    images: {
-                        create: uploadedProductImages.map((image, index) => ({
+                images: {
+                    create: uploadedProductImages.map((image, index) => {
+                        const file = productImageFiles[index];
+
+                        if (!file) {
+                            throw new AppError(
+                                400,
+                                "Product image file not found.",
+                            );
+                        }
+
+                        return {
                             url: image.secure_url,
+                            publicId: image.public_id,
+                            urlName: file.originalname,
+                            type: file.mimetype,
                             position: index,
-                        })),
-                    },
-                }),
+                        };
+                    }),
+                },
 
                 // Product variants
                 variants: {

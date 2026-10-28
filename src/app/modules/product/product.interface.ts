@@ -1,14 +1,15 @@
-import { CreateProductPayload } from "./product.validation";
-
-type UploadedColorImage = {
+type ProductImageData = {
     url: string;
+    urlName: string;
     publicId: string;
-    imageName: string;
-    imageType: string;
+    type: string;
     position: number;
-    isPrimary: boolean;
 };
 
-export type ColorWithImages = CreateProductPayload["colors"][number] & {
-    images: UploadedColorImage[];
+type ProductVariantImageData = {
+    url: string;
+    name: string;
+    publicId: string;
+    type: string;
+    position: number;
 };
