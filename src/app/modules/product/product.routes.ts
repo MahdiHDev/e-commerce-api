@@ -19,4 +19,11 @@ router.post(
     ProductController.createProduct,
 );
 
+router.patch(
+    "/:id",
+    checkAuth(UserRole.ADMIN),
+    upload.any(),
+    ProductController.updateProduct,
+);
+
 export const ProductRoutes: Router = router;

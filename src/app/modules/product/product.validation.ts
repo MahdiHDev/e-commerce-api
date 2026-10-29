@@ -42,3 +42,27 @@ export const createProductSchema = z.object({
 export type CreateProductPayload = z.infer<typeof createProductSchema>;
 
 export type ProductVariantPayload = z.infer<typeof productVariantSchema>;
+
+export const updateProductSchema = z.object({
+    name: z.string().trim().min(1).optional(),
+    slug: z.string().trim().min(1).optional(),
+    description: z.string().trim().optional(),
+    categoryId: z.string().optional(),
+    brandId: z.string().nullable().optional(),
+    status: z.enum(["DRAFT", "ACTIVE", "ARCHIVED"]).optional(),
+
+    variants: z
+        .array(
+            z.object({
+                sku: z.string().trim().min(1),
+                price: z.number().positive().optional(),
+                compareAtPrice: z.number().positive().nullable().optional(),
+                stockQuantity: z.number().int().min(0).optional(),
+                attributes: z.record(z.string(), z.unknown()).optional(),
+                imageGroup: z.string().trim().min(1),
+            }),
+        )
+        .optional(),
+});
+
+export type UpdateProductPayload = z.infer<typeof updateProductSchema>;
