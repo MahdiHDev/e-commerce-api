@@ -26,4 +26,16 @@ router.patch(
     ProductController.updateProduct,
 );
 
+router.patch(
+    "/restore/:id",
+    checkAuth(UserRole.ADMIN),
+    ProductController.restoreProduct,
+);
+
+router.delete(
+    "/:id",
+    checkAuth(UserRole.ADMIN),
+    ProductController.deleteProduct,
+);
+
 export const ProductRoutes: Router = router;

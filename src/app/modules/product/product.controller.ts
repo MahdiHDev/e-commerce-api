@@ -33,7 +33,7 @@ const createProduct = catchAsync(async (req: Request, res: Response) => {
     });
 });
 
-const updateProduct = catchAsync(async (req, res) => {
+const updateProduct = catchAsync(async (req: Request, res: Response) => {
     const { id } = req.params;
     const payload = updateProductSchema.parse(JSON.parse(req.body.data));
 
@@ -61,4 +61,35 @@ const updateProduct = catchAsync(async (req, res) => {
     });
 });
 
-export const ProductController = { createProduct, updateProduct };
+const deleteProduct = catchAsync(async (req: Request, res: Response) => {
+    const { id } = req.params;
+
+    const result = await ProductServices.deleteProduct(id as string);
+
+    sendResponse(res, {
+        httpStatusCode: status.OK,
+        success: true,
+        message: "Product deleted successfully",
+        data: result,
+    });
+});
+
+const restoreProduct = catchAsync(async (req: Request, res: Response) => {
+    const { id } = req.params;
+
+    const result = await ProductServices.restoreProduct(id as string);
+
+    sendResponse(res, {
+        httpStatusCode: status.OK,
+        success: true,
+        message: "Product restored successfully",
+        data: result,
+    });
+});
+
+export const ProductController = {
+    createProduct,
+    updateProduct,
+    deleteProduct,
+    restoreProduct,
+};
