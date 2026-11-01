@@ -60,7 +60,6 @@ export const ModelName = {
   Product: 'Product',
   ProductVariant: 'ProductVariant',
   ProductImage: 'ProductImage',
-  ProductVariantImage: 'ProductVariantImage',
   Brand: 'Brand',
   Cart: 'Cart',
   CartItem: 'CartItem',
@@ -191,6 +190,7 @@ export const ProductScalarFieldEnum = {
   categoryId: 'categoryId',
   brandId: 'brandId',
   status: 'status',
+  imageAttribute: 'imageAttribute',
   isDeleted: 'isDeleted',
   createdAt: 'createdAt',
   updatedAt: 'updatedAt',
@@ -208,6 +208,7 @@ export const ProductVariantScalarFieldEnum = {
   compareAtPrice: 'compareAtPrice',
   stockQuantity: 'stockQuantity',
   attributes: 'attributes',
+  position: 'position',
   isDeleted: 'isDeleted',
   createdAt: 'createdAt',
   updatedAt: 'updatedAt',
@@ -225,6 +226,7 @@ export const ProductImageScalarFieldEnum = {
   publicId: 'publicId',
   type: 'type',
   position: 'position',
+  groupValue: 'groupValue',
   isDeleted: 'isDeleted',
   createdAt: 'createdAt',
   updatedAt: 'updatedAt',
@@ -232,23 +234,6 @@ export const ProductImageScalarFieldEnum = {
 } as const
 
 export type ProductImageScalarFieldEnum = (typeof ProductImageScalarFieldEnum)[keyof typeof ProductImageScalarFieldEnum]
-
-
-export const ProductVariantImageScalarFieldEnum = {
-  id: 'id',
-  variantId: 'variantId',
-  url: 'url',
-  name: 'name',
-  publicId: 'publicId',
-  type: 'type',
-  position: 'position',
-  isDeleted: 'isDeleted',
-  createdAt: 'createdAt',
-  updatedAt: 'updatedAt',
-  deletedAt: 'deletedAt'
-} as const
-
-export type ProductVariantImageScalarFieldEnum = (typeof ProductVariantImageScalarFieldEnum)[keyof typeof ProductVariantImageScalarFieldEnum]
 
 
 export const BrandScalarFieldEnum = {
@@ -386,12 +371,11 @@ export const SortOrder = {
 export type SortOrder = (typeof SortOrder)[keyof typeof SortOrder]
 
 
-export const NullableJsonNullValueInput = {
-  DbNull: DbNull,
+export const JsonNullValueInput = {
   JsonNull: JsonNull
 } as const
 
-export type NullableJsonNullValueInput = (typeof NullableJsonNullValueInput)[keyof typeof NullableJsonNullValueInput]
+export type JsonNullValueInput = (typeof JsonNullValueInput)[keyof typeof JsonNullValueInput]
 
 
 export const QueryMode = {

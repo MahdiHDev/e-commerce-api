@@ -63,11 +63,6 @@ export type ProductVariant = Prisma.ProductVariantModel
  */
 export type ProductImage = Prisma.ProductImageModel
 /**
- * Model ProductVariantImage
- * 
- */
-export type ProductVariantImage = Prisma.ProductVariantImageModel
-/**
  * Model Brand
  * 
  */
