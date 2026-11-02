@@ -1,38 +1,203 @@
-import { Prisma } from "../../../generated/client";
+import { Prisma, Product } from "../../../generated/client";
 import { prisma } from "../../../lib/prisma";
 import { CloudinaryService } from "../../../services/cloudinary";
 import { UploadFile } from "../../../services/cloudinary/cloudinary.interface";
 import { CloudinaryFolders } from "../../config/cloudinary.folders";
 import AppError from "../../errorHelpers/AppError";
+import { IQueryParams } from "../../interfaces/query.interface";
+import { QueryBuilder } from "../../utils/QueryBuilder";
+import {
+    productFilterableFields,
+    productSearchableFields,
+    productSortableFields,
+} from "./product.constant";
+import {
+    ImageRow,
+    prepareVariants,
+    resolveImageAttribute,
+    splitImageFiles,
+    toAttrs,
+    uploadImageJobs,
+    VARIANT_IMAGE_PREFIX,
+} from "./product.helpers";
 import {
     CreateProductPayload,
     UpdateProductPayload,
 } from "./product.validation";
 
+// how many Cloudinary uploads run at the same time
+const UPLOAD_CONCURRENCY = 5;
+
+type UploadJob = {
+    file: UploadFile;
+    folder: string;
+    groupValue: string | null; // null = shared image
+};
+
+type ProductListRow = Product & {
+    images: { url: string }[];
+    variants: {
+        id: string;
+        price: unknown; // Prisma Decimal
+        compareAtPrice: unknown;
+        stockQuantity: number;
+    }[];
+    brand: { id: string; name: string; slug: string } | null;
+    category: { id: string; name: string; slug: string };
+};
+
+const toNumber = (value: unknown) => {
+    const n = Number(value);
+    return value !== undefined && value !== "" && Number.isFinite(n)
+        ? n
+        : undefined;
+};
+
+// GET /products?searchTerm=shirt&category.slug=shirt&minPrice=300&maxPrice=800
+//              &attributes[color]=Black&attributes[size]=M&page=1&limit=12&sortBy=name&sortOrder=asc
+const getAllProducts = async (
+    query: IQueryParams,
+    options: { publicOnly?: boolean } = {},
+) => {
+    const sortBy =
+        typeof query.sortBy === "string" &&
+        productSortableFields.includes(query.sortBy)
+            ? query.sortBy
+            : "createdAt";
+
+    // variant-level filters: all of them must be matched by the SAME variant
+    const minPrice = toNumber(query.minPrice);
+    const maxPrice = toNumber(query.maxPrice);
+
+    const rawAttributes = query.attributes as unknown;
+    const attributeFilters =
+        typeof rawAttributes === "object" &&
+        rawAttributes !== null &&
+        !Array.isArray(rawAttributes)
+            ? Object.entries(rawAttributes as Record<string, unknown>).filter(
+                  (entry): entry is [string, string] =>
+                      typeof entry[1] === "string" && entry[1] !== "",
+              )
+            : [];
+
+    const needsVariantFilter =
+        minPrice !== undefined ||
+        maxPrice !== undefined ||
+        attributeFilters.length > 0;
+
+    const variantFilter: Prisma.ProductVariantWhereInput = {
+        isDeleted: false,
+        ...(minPrice !== undefined || maxPrice !== undefined
+            ? {
+                  price: {
+                      ...(minPrice !== undefined ? { gte: minPrice } : {}),
+                      ...(maxPrice !== undefined ? { lte: maxPrice } : {}),
+                  },
+              }
+            : {}),
+        ...(attributeFilters.length > 0
+            ? {
+                  AND: attributeFilters.map(([key, value]) => ({
+                      attributes: { path: [key], equals: value },
+                  })),
+              }
+            : {}),
+    };
+
+    const queryBuilder = new QueryBuilder<
+        Product,
+        Prisma.ProductWhereInput,
+        Prisma.ProductInclude
+    >(
+        prisma.product,
+        { ...query, sortBy },
+        {
+            searchableFields: productSearchableFields,
+            filterableFields: productFilterableFields,
+        },
+    );
+
+    const result = await queryBuilder
+        .search()
+        .filter()
+        // where() runs after filter(), so these always win over anything in the URL
+        .where({
+            isDeleted: false,
+            ...(options.publicOnly && { status: "ACTIVE" as const }),
+            ...(needsVariantFilter && { variants: { some: variantFilter } }),
+        })
+        .include({
+            images: {
+                where: { isDeleted: false },
+                orderBy: { position: "asc" },
+                take: 1, // cover image
+                select: { url: true },
+            },
+            variants: {
+                where: { isDeleted: false },
+                orderBy: { position: "asc" },
+                select: {
+                    id: true,
+                    price: true,
+                    compareAtPrice: true,
+                    stockQuantity: true,
+                },
+            },
+            brand: { select: { id: true, name: true, slug: true } },
+            category: { select: { id: true, name: true, slug: true } },
+        })
+        .paginate()
+        .sort()
+        // no .fields() here: the card shape below is built from images + variants
+        .execute();
+
+    const products = result.data as unknown as ProductListRow[];
+
+    return {
+        data: products.map((product) => {
+            const prices = product.variants.map((v) => Number(v.price));
+            const defaultVariant =
+                product.variants.find((v) => v.stockQuantity > 0) ??
+                product.variants[0];
+
+            return {
+                id: product.id,
+                name: product.name,
+                slug: product.slug,
+                status: product.status,
+                createdAt: product.createdAt,
+                brand: product.brand,
+                category: product.category,
+                image: product.images[0]?.url ?? null,
+                minPrice: prices.length ? Math.min(...prices) : null,
+                maxPrice: prices.length ? Math.max(...prices) : null,
+                inStock: product.variants.some((v) => v.stockQuantity > 0),
+                isSingleVariant: product.variants.length === 1,
+                variantCount: product.variants.length,
+                defaultVariantId: defaultVariant?.id ?? null,
+            };
+        }),
+        meta: result.meta,
+    };
+};
+
 const createProduct = async (
     payload: CreateProductPayload,
-    files?: Record<string, UploadFile[]>,
+    files: Record<string, UploadFile[]> = {},
 ) => {
-    const { name, slug, description, categoryId, brandId, status, variants } =
-        payload;
+    const { name, slug, description, categoryId, brandId, status } = payload;
 
     const uploadedPublicIds: string[] = [];
 
     try {
         // ------------------------------------------
-        // 1. Format slug
+        // 1. Format slug + check duplicate product
         // ------------------------------------------
 
         const formattedSlug = slug.trim().toLowerCase().replace(/\s+/g, "-");
 
-        // ------------------------------------------
-        // 2. Check duplicate product slug
-        // ------------------------------------------
-
         const existingProduct = await prisma.product.findFirst({
-            where: {
-                slug: formattedSlug,
-            },
+            where: { slug: formattedSlug },
         });
 
         if (existingProduct) {
@@ -42,66 +207,34 @@ const createProduct = async (
                     "A deleted product with this slug already exists. Please restore it instead.",
                 );
             }
-
             throw new AppError(409, "A product with this slug already exists.");
         }
 
         // ------------------------------------------
-        // 3. Check category
+        // 2. Check category + brand
         // ------------------------------------------
 
         const category = await prisma.category.findFirst({
-            where: {
-                id: categoryId,
-                isDeleted: false,
-            },
+            where: { id: categoryId, isDeleted: false },
         });
-
-        if (!category) {
-            throw new AppError(404, "Category not found");
-        }
-
-        // ------------------------------------------
-        // 4. Check brand if provided
-        // ------------------------------------------
+        if (!category) throw new AppError(404, "Category not found");
 
         if (brandId) {
             const brand = await prisma.brand.findFirst({
-                where: {
-                    id: brandId,
-                    isDeleted: false,
-                },
+                where: { id: brandId, isDeleted: false },
             });
-
-            if (!brand) {
-                throw new AppError(404, "Brand not found");
-            }
+            if (!brand) throw new AppError(404, "Brand not found");
         }
 
         // ------------------------------------------
-        // 5. Check duplicate SKUs inside request
+        // 3. Validate variants + check SKUs in DB
         // ------------------------------------------
 
-        const skuList = variants.map((variant) => variant.sku);
-
-        const uniqueSkus = new Set(skuList);
-
-        if (skuList.length !== uniqueSkus.size) {
-            throw new AppError(409, "Duplicate SKU found in product variants.");
-        }
-
-        // ------------------------------------------
-        // 6. Check whether SKU already exists
-        // ------------------------------------------
+        const variants = prepareVariants(payload.variants);
 
         const existingVariant = await prisma.productVariant.findFirst({
-            where: {
-                sku: {
-                    in: skuList,
-                },
-            },
+            where: { sku: { in: variants.map((v) => v.sku) } },
         });
-
         if (existingVariant) {
             throw new AppError(
                 409,
@@ -110,232 +243,205 @@ const createProduct = async (
         }
 
         // ------------------------------------------
-        // 7. Validate + upload product images
+        // 4. Read the image groups from the file field names
         // ------------------------------------------
 
-        const productImageFiles = files?.productImages ?? [];
+        const generalFiles = files.productImages ?? [];
 
-        if (productImageFiles.length === 0) {
+        const groupedFiles = Object.entries(files)
+            .filter(([field]) => field.startsWith(VARIANT_IMAGE_PREFIX))
+            .map(([field, list]) => ({
+                group: field.slice(VARIANT_IMAGE_PREFIX.length).trim(),
+                files: list,
+            }))
+            .filter((g) => g.files.length > 0);
+
+        const totalFiles =
+            generalFiles.length +
+            groupedFiles.reduce((sum, g) => sum + g.files.length, 0);
+
+        if (totalFiles === 0) {
             throw new AppError(400, "At least one product image is required.");
         }
 
-        const uploadedProductImages = await Promise.all(
-            productImageFiles.map((file) =>
-                CloudinaryService.upload(file, {
-                    folder: CloudinaryFolders.product.productImage,
-                }),
-            ),
+        // no imageGroup in the request: the attribute is inferred from the groups
+        const imageAttribute = resolveImageAttribute(
+            variants.map((v) => v.attributes),
+            groupedFiles.map((g) => g.group),
         );
 
-        uploadedProductImages.forEach((image) => {
-            if (image.public_id) {
-                uploadedPublicIds.push(image.public_id);
-            }
-        });
-
         // ------------------------------------------
-        // 8. Upload variant images
+        // 5. Upload images (only after all validation passed)
         // ------------------------------------------
 
-        type VariantImageData = {
-            url: string;
-            name: string;
-            publicId: string;
-            type: string;
-            position: number;
-        };
+        // const imageRows: {
+        //     groupValue: string | null;
+        //     url: string;
+        //     urlName: string;
+        //     publicId: string;
+        //     type: string;
+        //     position: number;
+        // }[] = [];
 
-        const variantImageMap: Record<string, VariantImageData[]> = {};
+        // const uploadImage = async (
+        //     file: UploadFile,
+        //     folder: string,
+        //     groupValue: string | null,
+        // ) => {
+        //     if (!file.mimetype) {
+        //         throw new AppError(400, "Image MIME type is missing.");
+        //     }
 
-        // Find the unique image groups.
-        const imageGroups = new Set(
-            variants.map((variant) => variant.imageGroup),
-        );
+        //     const uploaded = await CloudinaryService.upload(file, { folder });
 
-        for (const imageGroup of imageGroups) {
-            const imageFiles = files?.[`variantImages_${imageGroup}`] ?? [];
+        //     if (!uploaded.public_id) {
+        //         throw new AppError(500, "Uploaded image public ID is missing.");
+        //     }
 
-            if (imageFiles.length === 0) {
-                throw new AppError(
-                    400,
-                    `At least one image is required for image group "${imageGroup}".`,
-                );
-            }
+        //     // tracked right away, so a later failure still rolls this one back
+        //     uploadedPublicIds.push(uploaded.public_id);
 
-            const images: VariantImageData[] = [];
+        //     imageRows.push({
+        //         groupValue,
+        //         url: uploaded.secure_url,
+        //         urlName: file.originalname,
+        //         publicId: uploaded.public_id,
+        //         type: file.mimetype,
+        //         position: imageRows.length, // order inside each group is preserved
+        //     });
+        // };
 
-            // Upload each file sequentially so each successful upload
-            // is tracked immediately for rollback.
-            for (const [index, file] of imageFiles.entries()) {
-                if (!file.mimetype) {
-                    throw new AppError(
-                        400,
-                        "Variant image MIME type is missing.",
-                    );
-                }
+        // for (const file of generalFiles) {
+        //     await uploadImage(
+        //         file,
+        //         CloudinaryFolders.product.productImage,
+        //         null,
+        //     );
+        // }
 
-                const uploaded = await CloudinaryService.upload(file, {
+        // for (const { group, files: groupFiles } of groupedFiles) {
+        //     for (const file of groupFiles) {
+        //         await uploadImage(
+        //             file,
+        //             CloudinaryFolders.product.variantImage,
+        //             group,
+        //         );
+        //     }
+        // }
+
+        const jobs: UploadJob[] = [
+            ...generalFiles.map((file) => ({
+                file,
+                folder: CloudinaryFolders.product.productImage,
+                groupValue: null,
+            })),
+            ...groupedFiles.flatMap(({ group, files: groupFiles }) =>
+                groupFiles.map((file) => ({
+                    file,
                     folder: CloudinaryFolders.product.variantImage,
-                });
+                    groupValue: group,
+                })),
+            ),
+        ];
 
-                if (!uploaded.public_id) {
-                    throw new AppError(
-                        500,
-                        "Uploaded image public ID is missing.",
-                    );
-                }
-
-                uploadedPublicIds.push(uploaded.public_id);
-
-                images.push({
-                    url: uploaded.secure_url,
-                    name: uploaded.original_filename,
-                    publicId: uploaded.public_id,
-                    type: file.mimetype,
-                    position: index,
-                });
+        // position is fixed up front, so parallel uploads still keep the slide order
+        const uploadImage = async (
+            { file, folder, groupValue }: UploadJob,
+            position: number,
+        ) => {
+            if (!file.mimetype) {
+                throw new AppError(400, "Image MIME type is missing.");
             }
 
-            variantImageMap[imageGroup] = images;
-        }
+            const uploaded = await CloudinaryService.upload(file, { folder });
 
-        const variantData = variants.map((variant) => {
-            const {
-                imageGroup,
-                sku,
-                price,
-                compareAtPrice,
-                stockQuantity,
-                attributes,
-            } = variant;
-
-            const variantImages = variantImageMap[imageGroup];
-
-            if (!variantImages || variantImages.length === 0) {
-                throw new AppError(
-                    400,
-                    `Images not found for image group "${imageGroup}".`,
-                );
+            if (!uploaded.public_id) {
+                throw new AppError(500, "Uploaded image public ID is missing.");
             }
+
+            // tracked right away, so a later failure still rolls this one back
+            uploadedPublicIds.push(uploaded.public_id);
 
             return {
-                sku: sku.trim(),
-                price,
-
-                ...(compareAtPrice !== undefined && {
-                    compareAtPrice,
-                }),
-
-                stockQuantity,
-                attributes,
-
-                productVariantImages: {
-                    create: variantImages.map((image) => ({
-                        url: image.url,
-                        name: image.name,
-                        publicId: image.publicId,
-                        type: image.type,
-                        position: image.position,
-                    })),
-                },
+                groupValue,
+                url: uploaded.secure_url,
+                urlName: file.originalname,
+                publicId: uploaded.public_id,
+                type: file.mimetype,
+                position,
             };
-        });
+        };
+
+        const imageRows: Awaited<ReturnType<typeof uploadImage>>[] = [];
+
+        for (let start = 0; start < jobs.length; start += UPLOAD_CONCURRENCY) {
+            const batch = jobs.slice(start, start + UPLOAD_CONCURRENCY);
+
+            // allSettled, not Promise.all: wait until every upload in the batch has
+            // finished, so all the successful ones are tracked before the rollback runs
+            const results = await Promise.allSettled(
+                batch.map((job, i) => uploadImage(job, start + i)),
+            );
+
+            for (const result of results) {
+                if (result.status === "rejected") throw result.reason;
+                imageRows.push(result.value);
+            }
+        }
 
         // ------------------------------------------
-        // 9. Create product + variants + images
+        // 6. Create product + variants + images (one nested write)
         // ------------------------------------------
 
-        const result = await prisma.product.create({
+        return await prisma.product.create({
             data: {
                 name: name.trim(),
-
                 slug: formattedSlug,
-
                 ...(description !== undefined && {
                     description: description.trim(),
                 }),
-
                 categoryId,
-
-                ...(brandId && {
-                    brandId,
-                }),
-
+                ...(brandId && { brandId }),
                 status,
+                imageAttribute: imageAttribute ?? null,
 
-                // Product gallery images
-                images: {
-                    create: uploadedProductImages.map((image, index) => {
-                        const file = productImageFiles[index];
+                images: { create: imageRows },
 
-                        if (!file) {
-                            throw new AppError(
-                                400,
-                                "Product image file not found.",
-                            );
-                        }
-
-                        return {
-                            url: image.secure_url,
-                            publicId: image.public_id,
-                            urlName: file.originalname,
-                            type: file.mimetype,
-                            position: index,
-                        };
-                    }),
-                },
-
-                // Product variants
                 variants: {
-                    create: variantData,
+                    create: variants.map((variant, index) => ({
+                        sku: variant.sku,
+                        price: variant.price,
+                        ...(variant.compareAtPrice !== undefined && {
+                            compareAtPrice: variant.compareAtPrice,
+                        }),
+                        stockQuantity: variant.stockQuantity,
+                        attributes:
+                            variant.attributes as Prisma.InputJsonObject,
+                        position: index,
+                    })),
                 },
             },
 
             include: {
                 images: {
-                    where: {
-                        isDeleted: false,
-                    },
-                    orderBy: {
-                        position: "asc",
-                    },
+                    where: { isDeleted: false },
+                    orderBy: { position: "asc" },
                 },
-
                 variants: {
-                    where: {
-                        isDeleted: false,
-                    },
-
-                    orderBy: {
-                        createdAt: "asc",
-                    },
-
-                    include: {
-                        productVariantImages: {
-                            where: {
-                                isDeleted: false,
-                            },
-
-                            orderBy: {
-                                position: "asc",
-                            },
-                        },
-                    },
+                    where: { isDeleted: false },
+                    orderBy: { position: "asc" },
                 },
-
                 brand: true,
-
                 category: true,
             },
         });
-
-        return result;
     } catch (error) {
         // ------------------------------------------
         // Rollback Cloudinary uploads
         // ------------------------------------------
 
-        await Promise.all(
+        // allSettled: one failed delete must not hide the original error
+        await Promise.allSettled(
             uploadedPublicIds.map((publicId) =>
                 CloudinaryService.delete(publicId),
             ),
@@ -346,248 +452,223 @@ const createProduct = async (
 };
 
 const updateProduct = async (
-    id: string,
+    productId: string,
     payload: UpdateProductPayload,
-    files?: Record<string, UploadFile[]>,
+    files: Record<string, UploadFile[]> = {},
 ) => {
     const uploadedPublicIds: string[] = [];
-    let oldPublicIds: string[] = [];
 
     try {
         // ------------------------------------------
-        // 1. Find existing product
+        // 1. Find the product
         // ------------------------------------------
 
-        const existingProduct = await prisma.product.findFirst({
-            where: {
-                id,
-                isDeleted: false,
-            },
-            include: {
-                images: {
-                    where: { isDeleted: false },
-                },
+        const product = await prisma.product.findFirst({
+            where: { id: productId, isDeleted: false },
+            select: {
+                id: true,
+                slug: true,
+                imageAttribute: true,
                 variants: {
                     where: { isDeleted: false },
-                    include: {
-                        productVariantImages: {
-                            where: { isDeleted: false },
-                        },
+                    select: {
+                        id: true,
+                        sku: true,
+                        price: true,
+                        compareAtPrice: true,
+                        attributes: true,
                     },
                 },
             },
         });
 
-        if (!existingProduct) {
-            throw new AppError(404, "Product not found.");
+        if (!product) throw new AppError(404, "Product not found");
+
+        const { generalFiles, groupedFiles } = splitImageFiles(files);
+        const variantUpdates = payload.variants ?? [];
+        const hasFiles = generalFiles.length > 0 || groupedFiles.length > 0;
+
+        const hasFieldUpdates = (
+            [
+                "name",
+                "slug",
+                "description",
+                "categoryId",
+                "brandId",
+                "status",
+            ] as const
+        ).some((key) => payload[key] !== undefined);
+
+        if (!hasFieldUpdates && variantUpdates.length === 0 && !hasFiles) {
+            throw new AppError(400, "Nothing to update.");
         }
 
-        // Collect old image IDs BEFORE changing database records.
-        oldPublicIds = [
-            ...existingProduct.images.map((image) => image.publicId),
-            ...existingProduct.variants.flatMap((variant) =>
-                variant.productVariantImages.map((image) => image.publicId),
-            ),
-        ];
-
         // ------------------------------------------
-        // 2. Validate slug
+        // 2. Slug (only checked when it actually changes)
         // ------------------------------------------
 
-        const formattedSlug = payload.slug
-            ?.trim()
-            .toLowerCase()
-            .replace(/\s+/g, "-");
+        let formattedSlug: string | undefined;
 
-        if (formattedSlug) {
-            const duplicateProduct = await prisma.product.findFirst({
-                where: {
-                    slug: formattedSlug,
-                    isDeleted: false,
-                    NOT: { id },
-                },
-            });
+        if (payload.slug !== undefined) {
+            formattedSlug = payload.slug
+                .trim()
+                .toLowerCase()
+                .replace(/\s+/g, "-");
 
-            if (duplicateProduct) {
-                throw new AppError(
-                    409,
-                    "A product with this slug already exists.",
-                );
-            }
+            if (formattedSlug !== product.slug) {
+                const taken = await prisma.product.findFirst({
+                    where: { slug: formattedSlug, id: { not: productId } },
+                });
 
-            const deletedProduct = await prisma.product.findFirst({
-                where: {
-                    slug: formattedSlug,
-                    isDeleted: true,
-                },
-            });
-
-            if (deletedProduct) {
-                throw new AppError(
-                    409,
-                    "A deleted product with this slug already exists. Please restore it instead.",
-                );
+                if (taken) {
+                    throw new AppError(
+                        409,
+                        taken.isDeleted
+                            ? "A deleted product with this slug already exists. Please restore it instead."
+                            : "A product with this slug already exists.",
+                    );
+                }
             }
         }
 
         // ------------------------------------------
-        // 3. Validate category and brand
+        // 3. Category + brand (brandId: null removes the brand)
         // ------------------------------------------
 
         if (payload.categoryId !== undefined) {
             const category = await prisma.category.findFirst({
-                where: {
-                    id: payload.categoryId,
-                    isDeleted: false,
-                },
+                where: { id: payload.categoryId, isDeleted: false },
             });
-
-            if (!category) {
-                throw new AppError(404, "Category not found.");
-            }
+            if (!category) throw new AppError(404, "Category not found");
         }
 
         if (payload.brandId) {
             const brand = await prisma.brand.findFirst({
-                where: {
-                    id: payload.brandId,
-                    isDeleted: false,
-                },
+                where: { id: payload.brandId, isDeleted: false },
             });
-
-            if (!brand) {
-                throw new AppError(404, "Brand not found.");
-            }
+            if (!brand) throw new AppError(404, "Brand not found");
         }
 
         // ------------------------------------------
-        // 4. Validate variants and SKUs
+        // 4. Variant updates (matched by SKU)
         // ------------------------------------------
 
-        const requestedVariants = payload.variants ?? [];
-        const requestedSkus = requestedVariants.map((variant) => variant.sku);
-
-        if (new Set(requestedSkus).size !== requestedSkus.length) {
-            throw new AppError(409, "Duplicate SKU found in request.");
-        }
-
-        const existingVariantBySku = new Map(
-            existingProduct.variants.map((variant) => [variant.sku, variant]),
+        const variantBySku = new Map<string, (typeof product.variants)[number]>(
+            product.variants.map((v) => [v.sku, v] as const),
         );
+        const seenSkus = new Set<string>();
 
-        for (const variant of requestedVariants) {
-            if (!existingVariantBySku.has(variant.sku)) {
+        for (const update of variantUpdates) {
+            if (seenSkus.has(update.sku)) {
+                throw new AppError(
+                    409,
+                    `SKU "${update.sku}" appears twice in the request.`,
+                );
+            }
+            seenSkus.add(update.sku);
+
+            const current = variantBySku.get(update.sku);
+            if (!current) {
                 throw new AppError(
                     404,
-                    `Variant with SKU "${variant.sku}" was not found in this product.`,
+                    `Variant with SKU "${update.sku}" not found on this product.`,
                 );
             }
-        }
 
-        // ------------------------------------------
-        // 5. Upload replacement product gallery
-        // ------------------------------------------
+            // check the final values, not just the ones that were sent
+            const nextPrice = update.price ?? Number(current.price);
+            const nextCompare =
+                update.compareAtPrice !== undefined
+                    ? update.compareAtPrice
+                    : current.compareAtPrice === null
+                      ? null
+                      : Number(current.compareAtPrice);
 
-        const productImageFiles = files?.productImages ?? [];
-
-        const newProductImages: {
-            url: string;
-            publicId: string;
-            urlName: string;
-            type: string;
-            position: number;
-        }[] = [];
-
-        for (const [position, file] of productImageFiles.entries()) {
-            const uploaded = await CloudinaryService.upload(file, {
-                folder: CloudinaryFolders.product.productImage,
-            });
-
-            if (!uploaded.public_id) {
+            if (nextCompare !== null && nextCompare < nextPrice) {
                 throw new AppError(
-                    500,
-                    "Uploaded product image public ID is missing.",
+                    400,
+                    `Variant "${update.sku}": compare at price must not be lower than the price.`,
                 );
             }
-
-            uploadedPublicIds.push(uploaded.public_id);
-
-            newProductImages.push({
-                url: uploaded.secure_url,
-                publicId: uploaded.public_id,
-                urlName: file.originalname,
-                type: file.mimetype,
-                position,
-            });
         }
 
         // ------------------------------------------
-        // 6. Upload replacement images by imageGroup
+        // 5. New image files: groups must be existing values of the image attribute
         // ------------------------------------------
 
-        type VariantImageData = {
-            url: string;
-            name: string;
-            publicId: string;
-            type: string;
-            position: number;
-        };
+        const { imageAttribute } = product;
 
-        const variantImageMap: Record<string, VariantImageData[]> = {};
+        if (groupedFiles.length > 0) {
+            if (!imageAttribute) {
+                throw new AppError(
+                    400,
+                    "This product shares one gallery across all variants. Upload to productImages instead.",
+                );
+            }
 
-        const imageGroups = new Set(
-            requestedVariants.map((variant) => variant.imageGroup),
-        );
+            const validValues = new Set(
+                product.variants.map(
+                    (v) => toAttrs(v.attributes)[imageAttribute] ?? "",
+                ),
+            );
 
-        for (const imageGroup of imageGroups) {
-            const imageFiles = files?.[`variantImages_${imageGroup}`] ?? [];
-
-            // No files supplied: preserve existing images.
-            if (imageFiles.length === 0) continue;
-
-            const images: VariantImageData[] = [];
-
-            for (const [position, file] of imageFiles.entries()) {
-                const uploaded = await CloudinaryService.upload(file, {
-                    folder: CloudinaryFolders.product.variantImage,
-                });
-
-                if (!uploaded.public_id) {
+            for (const { group } of groupedFiles) {
+                if (!validValues.has(group)) {
                     throw new AppError(
-                        500,
-                        "Uploaded variant image public ID is missing.",
+                        400,
+                        `"${group}" is not a ${imageAttribute} of this product. Existing: ${[...validValues].join(", ")}.`,
                     );
                 }
-
-                uploadedPublicIds.push(uploaded.public_id);
-
-                images.push({
-                    url: uploaded.secure_url,
-                    name: uploaded.original_filename,
-                    publicId: uploaded.public_id,
-                    type: file.mimetype,
-                    position,
-                });
             }
-
-            variantImageMap[imageGroup] = images;
         }
 
         // ------------------------------------------
-        // 7. Update database in a transaction
+        // 6. Upload new images (after all validation passed)
         // ------------------------------------------
 
-        const result = await prisma.$transaction(async (tx) => {
-            // Update product fields.
+        let imageRows: ImageRow[] = [];
+
+        if (hasFiles) {
+            const last = await prisma.productImage.aggregate({
+                where: { productId, isDeleted: false },
+                _max: { position: true },
+            });
+            const startPosition = (last._max.position ?? -1) + 1;
+
+            const jobs: UploadJob[] = [
+                ...generalFiles.map((file) => ({
+                    file,
+                    folder: CloudinaryFolders.product.productImage,
+                    groupValue: null,
+                })),
+                ...groupedFiles.flatMap(({ group, files: groupFiles }) =>
+                    groupFiles.map((file) => ({
+                        file,
+                        folder: CloudinaryFolders.product.variantImage,
+                        groupValue: group,
+                    })),
+                ),
+            ];
+
+            imageRows = await uploadImageJobs(
+                jobs,
+                startPosition,
+                uploadedPublicIds,
+            );
+        }
+
+        // ------------------------------------------
+        // 7. Save everything in one transaction
+        // ------------------------------------------
+
+        return await prisma.$transaction(async (tx) => {
             await tx.product.update({
-                where: { id },
+                where: { id: productId },
                 data: {
                     ...(payload.name !== undefined && {
                         name: payload.name.trim(),
                     }),
-                    ...(formattedSlug !== undefined && {
-                        slug: formattedSlug,
-                    }),
+                    ...(formattedSlug !== undefined && { slug: formattedSlug }),
                     ...(payload.description !== undefined && {
                         description: payload.description.trim(),
                     }),
@@ -603,106 +684,31 @@ const updateProduct = async (
                 },
             });
 
-            // Replace general gallery only when new files are supplied.
-            if (newProductImages.length > 0) {
-                await tx.productImage.updateMany({
-                    where: {
-                        productId: id,
-                        isDeleted: false,
-                    },
-                    data: {
-                        isDeleted: true,
-                        deletedAt: new Date(),
-                    },
-                });
-
-                await tx.productImage.createMany({
-                    data: newProductImages.map((image) => ({
-                        productId: id,
-                        ...image,
-                    })),
-                });
-            }
-
-            // Update variant fields by SKU.
-            for (const variant of requestedVariants) {
-                const existingVariant = existingVariantBySku.get(variant.sku);
-
-                if (!existingVariant) continue;
-
+            for (const update of variantUpdates) {
                 await tx.productVariant.update({
-                    where: { id: existingVariant.id },
+                    where: { id: variantBySku.get(update.sku)!.id },
                     data: {
-                        ...(variant.price !== undefined && {
-                            price: variant.price,
+                        ...(update.price !== undefined && {
+                            price: update.price,
                         }),
-                        ...(variant.compareAtPrice !== undefined && {
-                            compareAtPrice: variant.compareAtPrice,
+                        ...(update.compareAtPrice !== undefined && {
+                            compareAtPrice: update.compareAtPrice,
                         }),
-                        ...(variant.stockQuantity !== undefined && {
-                            stockQuantity: variant.stockQuantity,
-                        }),
-                        ...(variant.attributes !== undefined && {
-                            attributes:
-                                variant.attributes as Prisma.InputJsonValue,
+                        ...(update.stockQuantity !== undefined && {
+                            stockQuantity: update.stockQuantity,
                         }),
                     },
                 });
             }
 
-            // Replace images for every submitted variant in each
-            // image group that received replacement files.
-            for (const [imageGroup, images] of Object.entries(
-                variantImageMap,
-            )) {
-                const groupVariants = requestedVariants
-                    .filter((variant) => variant.imageGroup === imageGroup)
-                    .map((variant) => existingVariantBySku.get(variant.sku))
-                    .filter(
-                        (variant): variant is NonNullable<typeof variant> =>
-                            variant !== undefined,
-                    );
-
-                if (groupVariants.length === 0) {
-                    throw new AppError(
-                        400,
-                        `No variants found for image group "${imageGroup}".`,
-                    );
-                }
-
-                const variantIds = groupVariants.map((variant) => variant.id);
-
-                await tx.productVariantImage.updateMany({
-                    where: {
-                        variantId: { in: variantIds },
-                        isDeleted: false,
-                    },
-                    data: {
-                        isDeleted: true,
-                        deletedAt: new Date(),
-                    },
-                });
-
-                await tx.productVariantImage.createMany({
-                    data: groupVariants.flatMap((variant) =>
-                        images.map((image) => ({
-                            variantId: variant.id,
-                            url: image.url,
-                            name: image.name,
-                            publicId: image.publicId,
-                            type: image.type,
-                            position: image.position,
-                        })),
-                    ),
+            if (imageRows.length > 0) {
+                await tx.productImage.createMany({
+                    data: imageRows.map((row) => ({ ...row, productId })),
                 });
             }
 
-            // Return updated product.
-            return tx.product.findFirstOrThrow({
-                where: {
-                    id,
-                    isDeleted: false,
-                },
+            return tx.product.findUniqueOrThrow({
+                where: { id: productId },
                 include: {
                     images: {
                         where: { isDeleted: false },
@@ -710,50 +716,15 @@ const updateProduct = async (
                     },
                     variants: {
                         where: { isDeleted: false },
-                        orderBy: { createdAt: "asc" },
-                        include: {
-                            productVariantImages: {
-                                where: { isDeleted: false },
-                                orderBy: { position: "asc" },
-                            },
-                        },
+                        orderBy: { position: "asc" },
                     },
                     brand: true,
                     category: true,
                 },
             });
         });
-
-        // ------------------------------------------
-        // 8. SAFE CLOUDINARY DELETION — ADD HERE, AFTER THE TRANSACTION.
-        // ------------------------------------------
-        for (const publicId of new Set(oldPublicIds)) {
-            const [productImage, variantImage] = await Promise.all([
-                prisma.productImage.findFirst({
-                    where: {
-                        publicId,
-                        isDeleted: false,
-                    },
-                    select: { id: true },
-                }),
-
-                prisma.productVariantImage.findFirst({
-                    where: {
-                        publicId,
-                        isDeleted: false,
-                    },
-                    select: { id: true },
-                }),
-            ]);
-
-            if (!productImage && !variantImage) {
-                await CloudinaryService.delete(publicId);
-            }
-        }
-
-        return result;
     } catch (error) {
-        // Remove newly uploaded assets if database update fails.
+        // allSettled: one failed delete must not hide the original error
         await Promise.allSettled(
             uploadedPublicIds.map((publicId) =>
                 CloudinaryService.delete(publicId),
@@ -764,166 +735,161 @@ const updateProduct = async (
     }
 };
 
-const deleteProduct = async (id: string) => {
-    const existingProduct = await prisma.product.findFirst({
-        where: {
-            id,
-            isDeleted: false,
-        },
-        include: {
-            variants: {
-                where: {
-                    isDeleted: false,
-                },
-            },
-            images: {
-                where: {
-                    isDeleted: false,
-                },
-            },
-        },
-    });
+// const deleteProduct = async (id: string) => {
+//     const existingProduct = await prisma.product.findFirst({
+//         where: {
+//             id,
+//             isDeleted: false,
+//         },
+//         include: {
+//             variants: {
+//                 where: {
+//                     isDeleted: false,
+//                 },
+//             },
+//             images: {
+//                 where: {
+//                     isDeleted: false,
+//                 },
+//             },
+//         },
+//     });
 
-    if (!existingProduct) {
-        throw new AppError(404, "Product not found.");
-    }
+//     if (!existingProduct) {
+//         throw new AppError(404, "Product not found.");
+//     }
 
-    const result = await prisma.$transaction(async (tx) => {
-        // Soft-delete product images.
-        await tx.productImage.updateMany({
-            where: {
-                productId: id,
-                isDeleted: false,
-            },
-            data: {
-                isDeleted: true,
-                deletedAt: new Date(),
-            },
-        });
+//     const result = await prisma.$transaction(async (tx) => {
+//         // Soft-delete product images.
+//         await tx.productImage.updateMany({
+//             where: {
+//                 productId: id,
+//                 isDeleted: false,
+//             },
+//             data: {
+//                 isDeleted: true,
+//                 deletedAt: new Date(),
+//             },
+//         });
 
-        // Soft-delete variant images.
-        await tx.productVariantImage.updateMany({
-            where: {
-                productVariantId: {
-                    in: existingProduct.variants.map((variant) => variant.id),
-                },
-                isDeleted: false,
-            },
-            data: {
-                isDeleted: true,
-                deletedAt: new Date(),
-            },
-        });
+//         // Soft-delete variant images.
+//         await tx.productVariantImage.updateMany({
+//             where: {
+//                 productVariantId: {
+//                     in: existingProduct.variants.map((variant) => variant.id),
+//                 },
+//                 isDeleted: false,
+//             },
+//             data: {
+//                 isDeleted: true,
+//                 deletedAt: new Date(),
+//             },
+//         });
 
-        // Soft-delete product variants.
-        await tx.productVariant.updateMany({
-            where: {
-                productId: id,
-                isDeleted: false,
-            },
-            data: {
-                isDeleted: true,
-                deletedAt: new Date(),
-            },
-        });
+//         // Soft-delete product variants.
+//         await tx.productVariant.updateMany({
+//             where: {
+//                 productId: id,
+//                 isDeleted: false,
+//             },
+//             data: {
+//                 isDeleted: true,
+//                 deletedAt: new Date(),
+//             },
+//         });
 
-        // Soft-delete the product.
-        const deletedProduct = await tx.product.update({
-            where: {
-                id,
-            },
-            data: {
-                isDeleted: true,
-                deletedAt: new Date(),
-            },
-        });
+//         // Soft-delete the product.
+//         const deletedProduct = await tx.product.update({
+//             where: {
+//                 id,
+//             },
+//             data: {
+//                 isDeleted: true,
+//                 deletedAt: new Date(),
+//             },
+//         });
 
-        return deletedProduct;
-    });
+//         return deletedProduct;
+//     });
 
-    return result;
-};
+//     return result;
+// };
 
-const restoreProduct = async (id: string) => {
-    const existingProduct = await prisma.product.findFirst({
-        where: {
-            id,
-            isDeleted: true,
-        },
-    });
+// const restoreProduct = async (id: string) => {
+//     const existingProduct = await prisma.product.findFirst({
+//         where: {
+//             id,
+//             isDeleted: true,
+//         },
+//     });
 
-    if (!existingProduct) {
-        throw new AppError(404, "Deleted product not found.");
-    }
+//     if (!existingProduct) {
+//         throw new AppError(404, "Deleted product not found.");
+//     }
 
-    const result = await prisma.$transaction(async (tx) => {
-        // Restore product variants.
-        await tx.productVariant.updateMany({
-            where: {
-                productId: id,
-                isDeleted: true,
-            },
-            data: {
-                isDeleted: false,
-                deletedAt: null,
-            },
-        });
+//     const result = await prisma.$transaction(async (tx) => {
+//         // Restore product variants.
+//         await tx.productVariant.updateMany({
+//             where: {
+//                 productId: id,
+//                 isDeleted: true,
+//             },
+//             data: {
+//                 isDeleted: false,
+//                 deletedAt: null,
+//             },
+//         });
 
-        // Restore product gallery images.
-        await tx.productImage.updateMany({
-            where: {
-                productId: id,
-                isDeleted: true,
-            },
-            data: {
-                isDeleted: false,
-                deletedAt: null,
-            },
-        });
+//         // Restore product gallery images.
+//         await tx.productImage.updateMany({
+//             where: {
+//                 productId: id,
+//                 isDeleted: true,
+//             },
+//             data: {
+//                 isDeleted: false,
+//                 deletedAt: null,
+//             },
+//         });
 
-        // Restore variant images belonging to this product's variants.
-        const variants = await tx.productVariant.findMany({
-            where: {
-                productId: id,
-            },
-            select: {
-                id: true,
-            },
-        });
+//         // Restore variant images belonging to this product's variants.
+//         const variants = await tx.productVariant.findMany({
+//             where: {
+//                 productId: id,
+//             },
+//             select: {
+//                 id: true,
+//             },
+//         });
 
-        await tx.productVariantImage.updateMany({
-            where: {
-                productVariantId: {
-                    in: variants.map((variant) => variant.id),
-                },
-                isDeleted: true,
-            },
-            data: {
-                isDeleted: false,
-                deletedAt: null,
-            },
-        });
+//         await tx.productVariantImage.updateMany({
+//             where: {
+//                 productVariantId: {
+//                     in: variants.map((variant) => variant.id),
+//                 },
+//                 isDeleted: true,
+//             },
+//             data: {
+//                 isDeleted: false,
+//                 deletedAt: null,
+//             },
+//         });
 
-        // Restore the product.
-        const restoredProduct = await tx.product.update({
-            where: {
-                id,
-            },
-            data: {
-                isDeleted: false,
-                deletedAt: null,
-            },
-        });
+//         // Restore the product.
+//         const restoredProduct = await tx.product.update({
+//             where: {
+//                 id,
+//             },
+//             data: {
+//                 isDeleted: false,
+//                 deletedAt: null,
+//             },
+//         });
 
-        return restoredProduct;
-    });
+//         return restoredProduct;
+//     });
 
-    return result;
-};
+//     return result;
+// };
 
-export const ProductServices = {
-    createProduct,
-    updateProduct,
-    deleteProduct,
-    restoreProduct,
-};
+export const ProductServices = { getAllProducts, createProduct, updateProduct };

@@ -47,10 +47,12 @@ export const updateProductSchema = z.object({
     name: z.string().trim().min(1).optional(),
     slug: z.string().trim().min(1).optional(),
     description: z.string().trim().optional(),
-    categoryId: z.string().optional(),
-    brandId: z.string().nullable().optional(),
+    categoryId: z.string().uuid("Invalid category ID").optional(),
+    brandId: z.string().uuid("Invalid brand ID").nullable().optional(),
     status: z.enum(["DRAFT", "ACTIVE", "ARCHIVED"]).optional(),
 
+    // existing variants are matched by sku; attributes cannot be edited here
+    // (delete the variant and add a new one instead)
     variants: z
         .array(
             z.object({
@@ -58,8 +60,6 @@ export const updateProductSchema = z.object({
                 price: z.number().positive().optional(),
                 compareAtPrice: z.number().positive().nullable().optional(),
                 stockQuantity: z.number().int().min(0).optional(),
-                attributes: z.record(z.string(), z.unknown()).optional(),
-                imageGroup: z.string().trim().min(1),
             }),
         )
         .optional(),

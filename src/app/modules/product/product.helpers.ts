@@ -1,6 +1,8 @@
 // Drop-in replacement for your old createProduct.
 // Adjust these imports to your project (names/paths are guesses based on your old code).
 
+import { CloudinaryService } from "../../../services/cloudinary";
+import { UploadFile } from "../../../services/cloudinary/cloudinary.interface";
 import AppError from "../../errorHelpers/AppError";
 import { CreateProductPayload } from "./playgound.validation";
 
@@ -10,7 +12,16 @@ import { CreateProductPayload } from "./playgound.validation";
 /* Helpers (put above createProduct)                                  */
 /* ------------------------------------------------------------------ */
 
+// how many Cloudinary uploads run at the same time
+export const UPLOAD_CONCURRENCY = 5;
+
 type Attrs = Record<string, string>;
+
+export type UploadJob = {
+    file: UploadFile;
+    folder: string;
+    groupValue: string | null; // null = shared image
+};
 
 // files for one value of the image attribute are sent as: variantImages_<value>
 // e.g. variantImages_Black, variantImages_Teal
@@ -117,4 +128,87 @@ export const resolveImageAttribute = (
         `Variant images must be uploaded for every value of exactly one attribute. ` +
             `Got: ${groupNames.join(", ")}. Available: ${available || "none"}.`,
     );
+};
+
+/* ------------------------------------------------------------------ */
+/* Helpers (you can move these into product.helpers.ts)               */
+/* ------------------------------------------------------------------ */
+
+export const toAttrs = (json: unknown) => json as Attrs;
+
+// how many Cloudinary uploads run at the same time
+
+export type ImageRow = {
+    groupValue: string | null;
+    url: string;
+    urlName: string;
+    publicId: string;
+    type: string;
+    position: number;
+};
+
+// { productImages: [...], "variantImages_Black": [...] } -> shared files + one entry per group
+export const splitImageFiles = (files: Record<string, UploadFile[]>) => {
+    const generalFiles = files.productImages ?? [];
+
+    const groupedFiles = Object.entries(files)
+        .filter(([field]) => field.startsWith(VARIANT_IMAGE_PREFIX))
+        .map(([field, list]) => ({
+            group: field.slice(VARIANT_IMAGE_PREFIX.length).trim(),
+            files: list,
+        }))
+        .filter((g) => g.files.length > 0);
+
+    return { generalFiles, groupedFiles };
+};
+
+// Uploads in parallel batches. Every successful upload is tracked in
+// uploadedPublicIds immediately, so the caller can roll back on any failure.
+export const uploadImageJobs = async (
+    jobs: UploadJob[],
+    startPosition: number,
+    uploadedPublicIds: string[],
+) => {
+    const rows: ImageRow[] = [];
+
+    for (let start = 0; start < jobs.length; start += UPLOAD_CONCURRENCY) {
+        const batch = jobs.slice(start, start + UPLOAD_CONCURRENCY);
+
+        const results = await Promise.allSettled(
+            batch.map(async (job, i): Promise<ImageRow> => {
+                if (!job.file.mimetype) {
+                    throw new AppError(400, "Image MIME type is missing.");
+                }
+
+                const uploaded = await CloudinaryService.upload(job.file, {
+                    folder: job.folder,
+                });
+
+                if (!uploaded.public_id) {
+                    throw new AppError(
+                        500,
+                        "Uploaded image public ID is missing.",
+                    );
+                }
+
+                uploadedPublicIds.push(uploaded.public_id);
+
+                return {
+                    groupValue: job.groupValue,
+                    url: uploaded.secure_url,
+                    urlName: job.file.originalname,
+                    publicId: uploaded.public_id,
+                    type: job.file.mimetype,
+                    position: startPosition + start + i,
+                };
+            }),
+        );
+
+        for (const result of results) {
+            if (result.status === "rejected") throw result.reason;
+            rows.push(result.value);
+        }
+    }
+
+    return rows;
 };
