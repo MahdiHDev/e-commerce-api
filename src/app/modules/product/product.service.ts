@@ -13,12 +13,15 @@ import {
 } from "./product.constant";
 import {
     ImageRow,
+    prepareOptions,
     prepareVariants,
     resolveImageAttribute,
     splitImageFiles,
-    toAttrs,
+    // toAttrs,
     uploadImageJobs,
-    VARIANT_IMAGE_PREFIX,
+    validateImageGroups,
+    OPTION_IMAGE_PREFIX,
+    UploadJob,
 } from "./product.helpers";
 import {
     CreateProductPayload,
@@ -28,11 +31,11 @@ import {
 // how many Cloudinary uploads run at the same time
 const UPLOAD_CONCURRENCY = 5;
 
-type UploadJob = {
-    file: UploadFile;
-    folder: string;
-    groupValue: string | null; // null = shared image
-};
+// type UploadJob = {
+//     file: UploadFile;
+//     folder: string;
+//     groupValue?: string | null; // null = shared image
+// };
 
 type ProductListRow = Product & {
     images: { url: string }[];
@@ -182,274 +185,388 @@ const getAllProducts = async (
 };
 
 const createProduct = async (
-    payload: CreateProductPayload,
-    files: Record<string, UploadFile[]> = {},
+  payload: CreateProductPayload,
+  files: Record<string, UploadFile[]> = {},
 ) => {
-    const { name, slug, description, categoryId, brandId, status } = payload;
+  const uploadedPublicIds: string[] = [];
 
-    const uploadedPublicIds: string[] = [];
+  try {
+    const {
+      name,
+      slug,
+      description,
+      categoryId,
+      brandId,
+      status,
+    } = payload;
 
-    try {
-        // ------------------------------------------
-        // 1. Format slug + check duplicate product
-        // ------------------------------------------
+    const formattedSlug = slug
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, "-");
 
-        const formattedSlug = slug.trim().toLowerCase().replace(/\s+/g, "-");
+    const existingProduct = await prisma.product.findFirst({
+      where: {
+        slug: formattedSlug,
+      },
+    });
 
-        const existingProduct = await prisma.product.findFirst({
-            where: { slug: formattedSlug },
-        });
-
-        if (existingProduct) {
-            if (existingProduct.isDeleted) {
-                throw new AppError(
-                    409,
-                    "A deleted product with this slug already exists. Please restore it instead.",
-                );
-            }
-            throw new AppError(409, "A product with this slug already exists.");
-        }
-
-        // ------------------------------------------
-        // 2. Check category + brand
-        // ------------------------------------------
-
-        const category = await prisma.category.findFirst({
-            where: { id: categoryId, isDeleted: false },
-        });
-        if (!category) throw new AppError(404, "Category not found");
-
-        if (brandId) {
-            const brand = await prisma.brand.findFirst({
-                where: { id: brandId, isDeleted: false },
-            });
-            if (!brand) throw new AppError(404, "Brand not found");
-        }
-
-        // ------------------------------------------
-        // 3. Validate variants + check SKUs in DB
-        // ------------------------------------------
-
-        const variants = prepareVariants(payload.variants);
-
-        const existingVariant = await prisma.productVariant.findFirst({
-            where: { sku: { in: variants.map((v) => v.sku) } },
-        });
-        if (existingVariant) {
-            throw new AppError(
-                409,
-                `Variant with SKU "${existingVariant.sku}" already exists.`,
-            );
-        }
-
-        // ------------------------------------------
-        // 4. Read the image groups from the file field names
-        // ------------------------------------------
-
-        const generalFiles = files.productImages ?? [];
-
-        const groupedFiles = Object.entries(files)
-            .filter(([field]) => field.startsWith(VARIANT_IMAGE_PREFIX))
-            .map(([field, list]) => ({
-                group: field.slice(VARIANT_IMAGE_PREFIX.length).trim(),
-                files: list,
-            }))
-            .filter((g) => g.files.length > 0);
-
-        const totalFiles =
-            generalFiles.length +
-            groupedFiles.reduce((sum, g) => sum + g.files.length, 0);
-
-        if (totalFiles === 0) {
-            throw new AppError(400, "At least one product image is required.");
-        }
-
-        // no imageGroup in the request: the attribute is inferred from the groups
-        const imageAttribute = resolveImageAttribute(
-            variants.map((v) => v.attributes),
-            groupedFiles.map((g) => g.group),
+    if (existingProduct) {
+      if (existingProduct.isDeleted) {
+        throw new AppError(
+          409,
+          "A deleted product with this slug already exists. Please restore it instead.",
         );
+      }
 
-        // ------------------------------------------
-        // 5. Upload images (only after all validation passed)
-        // ------------------------------------------
-
-        // const imageRows: {
-        //     groupValue: string | null;
-        //     url: string;
-        //     urlName: string;
-        //     publicId: string;
-        //     type: string;
-        //     position: number;
-        // }[] = [];
-
-        // const uploadImage = async (
-        //     file: UploadFile,
-        //     folder: string,
-        //     groupValue: string | null,
-        // ) => {
-        //     if (!file.mimetype) {
-        //         throw new AppError(400, "Image MIME type is missing.");
-        //     }
-
-        //     const uploaded = await CloudinaryService.upload(file, { folder });
-
-        //     if (!uploaded.public_id) {
-        //         throw new AppError(500, "Uploaded image public ID is missing.");
-        //     }
-
-        //     // tracked right away, so a later failure still rolls this one back
-        //     uploadedPublicIds.push(uploaded.public_id);
-
-        //     imageRows.push({
-        //         groupValue,
-        //         url: uploaded.secure_url,
-        //         urlName: file.originalname,
-        //         publicId: uploaded.public_id,
-        //         type: file.mimetype,
-        //         position: imageRows.length, // order inside each group is preserved
-        //     });
-        // };
-
-        // for (const file of generalFiles) {
-        //     await uploadImage(
-        //         file,
-        //         CloudinaryFolders.product.productImage,
-        //         null,
-        //     );
-        // }
-
-        // for (const { group, files: groupFiles } of groupedFiles) {
-        //     for (const file of groupFiles) {
-        //         await uploadImage(
-        //             file,
-        //             CloudinaryFolders.product.variantImage,
-        //             group,
-        //         );
-        //     }
-        // }
-
-        const jobs: UploadJob[] = [
-            ...generalFiles.map((file) => ({
-                file,
-                folder: CloudinaryFolders.product.productImage,
-                groupValue: null,
-            })),
-            ...groupedFiles.flatMap(({ group, files: groupFiles }) =>
-                groupFiles.map((file) => ({
-                    file,
-                    folder: CloudinaryFolders.product.variantImage,
-                    groupValue: group,
-                })),
-            ),
-        ];
-
-        // position is fixed up front, so parallel uploads still keep the slide order
-        const uploadImage = async (
-            { file, folder, groupValue }: UploadJob,
-            position: number,
-        ) => {
-            if (!file.mimetype) {
-                throw new AppError(400, "Image MIME type is missing.");
-            }
-
-            const uploaded = await CloudinaryService.upload(file, { folder });
-
-            if (!uploaded.public_id) {
-                throw new AppError(500, "Uploaded image public ID is missing.");
-            }
-
-            // tracked right away, so a later failure still rolls this one back
-            uploadedPublicIds.push(uploaded.public_id);
-
-            return {
-                groupValue,
-                url: uploaded.secure_url,
-                urlName: file.originalname,
-                publicId: uploaded.public_id,
-                type: file.mimetype,
-                position,
-            };
-        };
-
-        const imageRows: Awaited<ReturnType<typeof uploadImage>>[] = [];
-
-        for (let start = 0; start < jobs.length; start += UPLOAD_CONCURRENCY) {
-            const batch = jobs.slice(start, start + UPLOAD_CONCURRENCY);
-
-            // allSettled, not Promise.all: wait until every upload in the batch has
-            // finished, so all the successful ones are tracked before the rollback runs
-            const results = await Promise.allSettled(
-                batch.map((job, i) => uploadImage(job, start + i)),
-            );
-
-            for (const result of results) {
-                if (result.status === "rejected") throw result.reason;
-                imageRows.push(result.value);
-            }
-        }
-
-        // ------------------------------------------
-        // 6. Create product + variants + images (one nested write)
-        // ------------------------------------------
-
-        return await prisma.product.create({
-            data: {
-                name: name.trim(),
-                slug: formattedSlug,
-                ...(description !== undefined && {
-                    description: description.trim(),
-                }),
-                categoryId,
-                ...(brandId && { brandId }),
-                status,
-                imageAttribute: imageAttribute ?? null,
-
-                images: { create: imageRows },
-
-                variants: {
-                    create: variants.map((variant, index) => ({
-                        sku: variant.sku,
-                        price: variant.price,
-                        ...(variant.compareAtPrice !== undefined && {
-                            compareAtPrice: variant.compareAtPrice,
-                        }),
-                        stockQuantity: variant.stockQuantity,
-                        attributes:
-                            variant.attributes as Prisma.InputJsonObject,
-                        position: index,
-                    })),
-                },
-            },
-
-            include: {
-                images: {
-                    where: { isDeleted: false },
-                    orderBy: { position: "asc" },
-                },
-                variants: {
-                    where: { isDeleted: false },
-                    orderBy: { position: "asc" },
-                },
-                brand: true,
-                category: true,
-            },
-        });
-    } catch (error) {
-        // ------------------------------------------
-        // Rollback Cloudinary uploads
-        // ------------------------------------------
-
-        // allSettled: one failed delete must not hide the original error
-        await Promise.allSettled(
-            uploadedPublicIds.map((publicId) =>
-                CloudinaryService.delete(publicId),
-            ),
-        );
-
-        throw error;
+      throw new AppError(
+        409,
+        "A product with this slug already exists.",
+      );
     }
+
+    // ------------------------------------------
+    // 2. Check category and brand
+    // ------------------------------------------
+
+    const category = await prisma.category.findFirst({
+      where: {
+        id: categoryId,
+        isDeleted: false,
+      },
+    });
+
+    if (!category) {
+      throw new AppError(404, "Category not found.");
+    }
+
+    if (brandId) {
+      const brand = await prisma.brand.findFirst({
+        where: {
+          id: brandId,
+          isDeleted: false,
+        },
+      });
+
+      if (!brand) {
+        throw new AppError(404, "Brand not found.");
+      }
+    }
+
+    // ------------------------------------------
+    // 3. Prepare options and variants
+    // ------------------------------------------
+
+    const options = prepareOptions(payload.options);
+
+    const variants = prepareVariants(
+      payload.variants,
+      options,
+    );
+
+    // Check SKUs against existing database records.
+    const existingVariant = await prisma.productVariant.findFirst({
+      where: {
+        sku: {
+          in: variants.map((variant) => variant.sku),
+        },
+      },
+    });
+
+    if (existingVariant) {
+      throw new AppError(
+        409,
+        `Variant with SKU "${existingVariant.sku}" already exists.`,
+      );
+    }
+
+    // ------------------------------------------
+    // 4. Read and validate image groups
+    // ------------------------------------------
+
+    const {
+      generalFiles,
+      groupedFiles,
+    } = splitImageFiles(files);
+
+    const totalFiles =
+      generalFiles.length +
+      groupedFiles.reduce(
+        (sum, group) => sum + group.files.length,
+        0,
+      );
+
+    if (totalFiles === 0) {
+      throw new AppError(
+        400,
+        "At least one product image is required.",
+      );
+    }
+
+    // Product.imageAttribute stores the option name
+    // used to group product images, e.g. "Color".
+    const imageAttribute = validateImageGroups(
+      groupedFiles,
+      options,
+    );
+
+    // ------------------------------------------
+    // 5. Prepare Cloudinary upload jobs
+    // ------------------------------------------
+
+    const jobs: UploadJob[] = [
+      ...generalFiles.map((file) => ({
+        file,
+        folder: CloudinaryFolders.product.productImage,
+        optionName: null,
+        optionValue: null,
+      })),
+
+      ...groupedFiles.flatMap((group) =>
+        group.files.map((file) => ({
+          file,
+          folder: CloudinaryFolders.product.variantImage,
+          optionName: group.optionName,
+          optionValue: group.optionValue,
+        })),
+      ),
+    ];
+
+    // ------------------------------------------
+    // 6. Upload images
+    // ------------------------------------------
+
+    const imageRows = await uploadImageJobs(
+      jobs,
+      0,
+      uploadedPublicIds,
+    );
+
+    // ------------------------------------------
+    // 7. Create product, options, variants and images
+    //    in one database transaction
+    // ------------------------------------------
+
+    const createdProduct = await prisma.$transaction(
+      async (tx) => {
+        // Create product and its options and values.
+        const product = await tx.product.create({
+          data: {
+            name: name.trim(),
+            slug: formattedSlug,
+
+            ...(description !== undefined && {
+              description: description?.trim() ?? null,
+            }),
+
+            categoryId,
+
+            ...(brandId && {
+              brandId,
+            }),
+
+            status,
+            imageAttribute: imageAttribute ?? null,
+
+            productOptions: {
+              create: options.map((option) => ({
+                name: option.name,
+                values: {
+                  create: option.values.map((value) => ({
+                    value,
+                  })),
+                },
+              })),
+            },
+          },
+
+          include: {
+            productOptions: {
+              include: {
+                values: true,
+              },
+            },
+          },
+        });
+
+        // --------------------------------------
+        // 8. Build OptionValue lookup map
+        // --------------------------------------
+
+        const optionValueMap = new Map<string, string>();
+
+        for (const option of product.productOptions) {
+          for (const value of option.values) {
+            const key =
+              `${option.name.toLowerCase()}=${value.value.toLowerCase()}`;
+
+            optionValueMap.set(key, value.id);
+          }
+        }
+
+        // --------------------------------------
+        // 9. Create variants and their option relations
+        // --------------------------------------
+
+        for (const variant of variants) {
+          const selectedValueIds = Object.entries(
+            variant.optionValues,
+          ).map(([optionName, optionValue]) => {
+            const key =
+              `${optionName.toLowerCase()}=${optionValue.toLowerCase()}`;
+
+            const optionValueId = optionValueMap.get(key);
+
+            if (!optionValueId) {
+              throw new AppError(
+                400,
+                `Invalid option value: ${optionName} - ${optionValue}.`,
+              );
+            }
+
+            return optionValueId;
+          });
+
+          await tx.productVariant.create({
+            data: {
+              productId: product.id,
+              sku: variant.sku,
+
+              price: new Prisma.Decimal(variant.price),
+
+              compareAtPrice:
+                variant.compareAtPrice == null
+                  ? null
+                  : new Prisma.Decimal(variant.compareAtPrice),
+
+              stockQuantity: variant.stockQuantity,
+              position: variant.position ?? 0,
+
+              attributes:
+                (variant.attributes ?? {}) as Prisma.InputJsonValue,
+
+              optionValues: {
+                create: selectedValueIds.map((optionValueId) => ({
+                  optionValue: {
+                    connect: {
+                      id: optionValueId,
+                    },
+                  },
+                })),
+              },
+            },
+          });
+        }
+
+        // --------------------------------------
+        // 10. Connect images to OptionValue records
+        // --------------------------------------
+
+        const productImages = imageRows.map((image, index) => {
+          const job = jobs[index];
+
+          let optionValueId: string | null = null;
+
+          if (job?.optionName && job?.optionValue) {
+            const key =
+              `${job.optionName.toLowerCase()}=${job.optionValue.toLowerCase()}`;
+
+            optionValueId = optionValueMap.get(key) ?? null;
+
+            if (!optionValueId) {
+              throw new AppError(
+                400,
+                `Could not resolve image option value: ${key}.`,
+              );
+            }
+          }
+
+          return {
+            productId: product.id,
+            url: image.url,
+            urlName: image.urlName,
+            publicId: image.publicId,
+            type: image.type,
+            position: image.position,
+            groupValue: image.groupValue,
+            optionValueId,
+          };
+        });
+
+        if (productImages.length > 0) {
+          await tx.productImage.createMany({
+            data: productImages,
+          });
+        }
+
+        // --------------------------------------
+        // 11. Return complete product
+        // --------------------------------------
+
+        return tx.product.findUniqueOrThrow({
+          where: {
+            id: product.id,
+          },
+
+          include: {
+            images: {
+              where: {
+                isDeleted: false,
+              },
+              orderBy: {
+                position: "asc",
+              },
+            },
+
+            productOptions: {
+              include: {
+                values: true,
+              },
+            },
+
+            variants: {
+              where: {
+                isDeleted: false,
+              },
+              orderBy: {
+                position: "asc",
+              },
+              include: {
+                optionValues: {
+                  include: {
+                    optionValue: {
+                      include: {
+                        option: true,
+                      },
+                    },
+                  },
+                },
+              },
+            },
+
+            brand: true,
+            category: true,
+          },
+        });
+      },
+  {
+    maxWait: 10000,
+    timeout: 20000,
+  },
+    );
+
+    return createdProduct;
+  } catch (error) {
+    // ------------------------------------------
+    // 12. Roll back Cloudinary uploads
+    // ------------------------------------------
+
+    // await rollbackCloudinaryUploads(uploadedPublicIds);
+
+    throw error;
+  }
 };
+
 
 const updateProduct = async (
     productId: string,

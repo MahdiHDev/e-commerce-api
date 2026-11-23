@@ -82,6 +82,21 @@ export type Product = Prisma.ProductModel
  */
 export type ProductVariant = Prisma.ProductVariantModel
 /**
+ * Model ProductOption
+ * 
+ */
+export type ProductOption = Prisma.ProductOptionModel
+/**
+ * Model OptionValue
+ * 
+ */
+export type OptionValue = Prisma.OptionValueModel
+/**
+ * Model VariantOptionValue
+ * 
+ */
+export type VariantOptionValue = Prisma.VariantOptionValueModel
+/**
  * Model ProductImage
  * 
  */

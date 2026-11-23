@@ -1,214 +1,518 @@
-// Drop-in replacement for your old createProduct.
-// Adjust these imports to your project (names/paths are guesses based on your old code).
 
 import { CloudinaryService } from "../../../services/cloudinary";
 import { UploadFile } from "../../../services/cloudinary/cloudinary.interface";
 import AppError from "../../errorHelpers/AppError";
-import { CreateProductPayload } from "./playgound.validation";
 
-// In CreateProductPayload, delete `imageGroup` from the variant type.
+// --------------------------------------------------
+// Constants and types
+// --------------------------------------------------
 
-/* ------------------------------------------------------------------ */
-/* Helpers (put above createProduct)                                  */
-/* ------------------------------------------------------------------ */
-
-// how many Cloudinary uploads run at the same time
 export const UPLOAD_CONCURRENCY = 5;
 
-type Attrs = Record<string, string>;
+export const OPTION_IMAGE_PREFIX = "optionImages:";
+
+export type ProductOptionInput = {
+  name: string;
+  values: string[];
+};
+
+export type VariantInput = {
+  sku: string;
+  price: number;
+  compareAtPrice?: number | null | undefined;
+  stockQuantity: number;
+  position?: number;
+  attributes?: Record<string, unknown>;
+  optionValues: Record<string, string>;
+};
 
 export type UploadJob = {
-    file: UploadFile;
-    folder: string;
-    groupValue: string | null; // null = shared image
+  file: UploadFile;
+  folder: string;
+  optionName: string | null;
+  optionValue: string | null;
 };
-
-// files for one value of the image attribute are sent as: variantImages_<value>
-// e.g. variantImages_Black, variantImages_Teal
-export const VARIANT_IMAGE_PREFIX = "variantImages_";
-
-const cleanAttrs = (attrs: Attrs): Attrs =>
-    Object.fromEntries(
-        Object.entries(attrs ?? {}).map(([k, v]) => [
-            k.trim(),
-            String(v).trim(),
-        ]),
-    );
-
-const attrKeys = (attrs: Attrs) => Object.keys(attrs).sort().join("|");
-
-const comboKey = (attrs: Attrs) =>
-    Object.keys(attrs)
-        .sort()
-        .map((k) => `${k}=${attrs[k]}`)
-        .join("|");
-
-// same attribute names on every variant, no duplicate combinations, no duplicate SKUs
-export const prepareVariants = (variants: CreateProductPayload["variants"]) => {
-    if (!variants?.length) {
-        throw new AppError(400, "At least one variant is required.");
-    }
-
-    const cleaned = variants.map((v) => ({
-        ...v,
-        sku: v.sku.trim(),
-        attributes: cleanAttrs(v.attributes),
-    }));
-
-    if (new Set(cleaned.map((v) => v.sku)).size !== cleaned.length) {
-        throw new AppError(409, "Duplicate SKU found in product variants.");
-    }
-
-    const keys = attrKeys(cleaned[0]!.attributes);
-    const seen = new Set<string>();
-
-    for (const v of cleaned) {
-        if (attrKeys(v.attributes) !== keys) {
-            throw new AppError(
-                400,
-                `Variant "${v.sku}" must use the same attributes as the other variants.`,
-            );
-        }
-
-        const combo = comboKey(v.attributes);
-        if (seen.has(combo)) {
-            throw new AppError(
-                409,
-                `Duplicate variant combination${combo ? `: ${combo}` : ""}.`,
-            );
-        }
-        seen.add(combo);
-    }
-
-    return cleaned;
-};
-
-// Works out WHICH attribute the images belong to, from the uploaded group names.
-// Groups [Black, Teal] + variants with Color{Black,Teal} and Size{M,L,XL}
-// -> only Color has exactly those values, so images belong to Color.
-export const resolveImageAttribute = (
-    variantAttrs: Attrs[],
-    groupNames: string[],
-) => {
-    if (groupNames.length === 0) return null; // no grouped images: everything is shared
-
-    const valuesByAttribute = new Map<string, Set<string>>();
-    for (const attrs of variantAttrs) {
-        for (const [key, value] of Object.entries(attrs)) {
-            if (!valuesByAttribute.has(key))
-                valuesByAttribute.set(key, new Set());
-            valuesByAttribute.get(key)!.add(value);
-        }
-    }
-
-    const groups = new Set(groupNames);
-    const matches = [...valuesByAttribute]
-        .filter(
-            ([, values]) =>
-                values.size === groups.size &&
-                [...values].every((v) => groups.has(v)),
-        )
-        .map(([key]) => key);
-
-    if (matches.length === 1) return matches[0];
-
-    if (matches.length > 1) {
-        throw new AppError(
-            400,
-            `Image groups match more than one attribute (${matches.join(", ")}), so the images are ambiguous.`,
-        );
-    }
-
-    const available = [...valuesByAttribute]
-        .map(([key, values]) => `${key}: ${[...values].join(", ")}`)
-        .join(" | ");
-
-    throw new AppError(
-        400,
-        `Variant images must be uploaded for every value of exactly one attribute. ` +
-            `Got: ${groupNames.join(", ")}. Available: ${available || "none"}.`,
-    );
-};
-
-/* ------------------------------------------------------------------ */
-/* Helpers (you can move these into product.helpers.ts)               */
-/* ------------------------------------------------------------------ */
-
-export const toAttrs = (json: unknown) => json as Attrs;
-
-// how many Cloudinary uploads run at the same time
 
 export type ImageRow = {
-    groupValue: string | null;
-    url: string;
-    urlName: string;
-    publicId: string;
-    type: string;
-    position: number;
+  url: string;
+  urlName: string;
+  publicId: string;
+  type: string;
+  position: number;
+  groupValue: string | null;
+  optionValueId: string | null;
 };
 
-// { productImages: [...], "variantImages_Black": [...] } -> shared files + one entry per group
-export const splitImageFiles = (files: Record<string, UploadFile[]>) => {
-    const generalFiles = files.productImages ?? [];
-
-    const groupedFiles = Object.entries(files)
-        .filter(([field]) => field.startsWith(VARIANT_IMAGE_PREFIX))
-        .map(([field, list]) => ({
-            group: field.slice(VARIANT_IMAGE_PREFIX.length).trim(),
-            files: list,
-        }))
-        .filter((g) => g.files.length > 0);
-
-    return { generalFiles, groupedFiles };
+export type GroupedImageFiles = {
+  optionName: string;
+  optionValue: string;
+  files: UploadFile[];
 };
 
-// Uploads in parallel batches. Every successful upload is tracked in
-// uploadedPublicIds immediately, so the caller can roll back on any failure.
-export const uploadImageJobs = async (
-    jobs: UploadJob[],
-    startPosition: number,
-    uploadedPublicIds: string[],
+// --------------------------------------------------
+// Image field name helper
+// --------------------------------------------------
+
+export const encodeImageField = (
+  optionName: string,
+  optionValue: string,
 ) => {
-    const rows: ImageRow[] = [];
+  return (
+    OPTION_IMAGE_PREFIX +
+    encodeURIComponent(optionName) +
+    ":" +
+    encodeURIComponent(optionValue)
+  );
+};
 
-    for (let start = 0; start < jobs.length; start += UPLOAD_CONCURRENCY) {
-        const batch = jobs.slice(start, start + UPLOAD_CONCURRENCY);
+// --------------------------------------------------
+// Prepare and validate product options
+// --------------------------------------------------
 
-        const results = await Promise.allSettled(
-            batch.map(async (job, i): Promise<ImageRow> => {
-                if (!job.file.mimetype) {
-                    throw new AppError(400, "Image MIME type is missing.");
-                }
+export const prepareOptions = (options: ProductOptionInput[]) => {
+  if (!Array.isArray(options)) {
+    throw new AppError(400, "Product options must be an array.");
+  }
 
-                const uploaded = await CloudinaryService.upload(job.file, {
-                    folder: job.folder,
-                });
+  const seenNames = new Set<string>();
 
-                if (!uploaded.public_id) {
-                    throw new AppError(
-                        500,
-                        "Uploaded image public ID is missing.",
-                    );
-                }
+  return options.map((option) => {
+    const name = option.name?.trim();
 
-                uploadedPublicIds.push(uploaded.public_id);
-
-                return {
-                    groupValue: job.groupValue,
-                    url: uploaded.secure_url,
-                    urlName: job.file.originalname,
-                    publicId: uploaded.public_id,
-                    type: job.file.mimetype,
-                    position: startPosition + start + i,
-                };
-            }),
-        );
-
-        for (const result of results) {
-            if (result.status === "rejected") throw result.reason;
-            rows.push(result.value);
-        }
+    if (!name) {
+      throw new AppError(400, "Option name cannot be empty.");
     }
 
-    return rows;
+    const normalizedName = name.toLowerCase();
+
+    if (seenNames.has(normalizedName)) {
+      throw new AppError(409, `Duplicate option name: ${name}.`);
+    }
+
+    seenNames.add(normalizedName);
+
+    if (!Array.isArray(option.values) || option.values.length === 0) {
+      throw new AppError(
+        400,
+        `Option "${name}" must have at least one value.`,
+      );
+    }
+
+    const seenValues = new Set<string>();
+
+    const values = option.values.map((value) => {
+      const cleanedValue = value?.trim();
+
+      if (!cleanedValue) {
+        throw new AppError(
+          400,
+          `Option "${name}" contains an empty value.`,
+        );
+      }
+
+      const normalizedValue = cleanedValue.toLowerCase();
+
+      if (seenValues.has(normalizedValue)) {
+        throw new AppError(
+          409,
+          `Duplicate value "${cleanedValue}" in option "${name}".`,
+        );
+      }
+
+      seenValues.add(normalizedValue);
+
+      return cleanedValue;
+    });
+
+    return { name, values };
+  });
 };
+
+// --------------------------------------------------
+// Prepare and validate submitted variants
+// Frontend generates combinations.
+// Backend validates them.
+// --------------------------------------------------
+
+export const prepareVariants = (
+  variants: VariantInput[],
+  options: ProductOptionInput[],
+) => {
+  if (!Array.isArray(variants) || variants.length === 0) {
+    throw new AppError(400, "At least one variant is required.");
+  }
+
+  const optionNames = options.map((option) => option.name);
+
+  const expectedOptionNames = new Set(
+    optionNames.map((name) => name.toLowerCase()),
+  );
+
+  const seenSkus = new Set<string>();
+  const seenCombinations = new Set<string>();
+
+  return variants.map((variant) => {
+    const sku = variant.sku?.trim();
+
+    if (!sku) {
+      throw new AppError(400, "Variant SKU cannot be empty.");
+    }
+
+    const normalizedSku = sku.toLowerCase();
+
+    if (seenSkus.has(normalizedSku)) {
+      throw new AppError(409, `Duplicate SKU: ${sku}.`);
+    }
+
+    seenSkus.add(normalizedSku);
+
+    if (!Number.isFinite(variant.price) || variant.price < 0) {
+      throw new AppError(
+        400,
+        `Invalid price for variant "${sku}".`,
+      );
+    }
+
+    if (
+      variant.compareAtPrice != null &&
+      (!Number.isFinite(variant.compareAtPrice) ||
+        variant.compareAtPrice < variant.price)
+    ) {
+      throw new AppError(
+        400,
+        `Compare-at price must be greater than or equal to price for "${sku}".`,
+      );
+    }
+
+    if (
+      !Number.isInteger(variant.stockQuantity) ||
+      variant.stockQuantity < 0
+    ) {
+      throw new AppError(
+        400,
+        `Invalid stock quantity for variant "${sku}".`,
+      );
+    }
+
+    const submittedValues = variant.optionValues ?? {};
+
+    const submittedNames = Object.keys(submittedValues);
+
+    // Every variant must have exactly the same option names.
+    if (
+      submittedNames.length !== expectedOptionNames.size ||
+      submittedNames.some(
+        (name) => !expectedOptionNames.has(name.toLowerCase()),
+      )
+    ) {
+      throw new AppError(
+        400,
+        `Variant "${sku}" must contain exactly the product's options.`,
+      );
+    }
+
+    const normalizedOptionValues: Record<string, string> = {};
+
+    for (const option of options) {
+      const submittedKey = submittedNames.find(
+        (name) => name.toLowerCase() === option.name.toLowerCase(),
+      );
+
+      if (!submittedKey) {
+        throw new AppError(
+          400,
+          `Variant "${sku}" is missing option "${option.name}".`,
+        );
+      }
+
+      const selectedValue = submittedValues[submittedKey]?.trim();
+
+      if (!selectedValue) {
+        throw new AppError(
+          400,
+          `Variant "${sku}" has an empty value for "${option.name}".`,
+        );
+      }
+
+      const validValue = option.values.find(
+        (value) => value.toLowerCase() === selectedValue.toLowerCase(),
+      );
+
+      if (!validValue) {
+        throw new AppError(
+          400,
+          `"${selectedValue}" is not a valid value for "${option.name}".`,
+        );
+      }
+
+      normalizedOptionValues[option.name] = validValue;
+    }
+
+    // Stable combination key based on option names and values.
+    const combinationKey = options
+      .map((option) => {
+        const value = normalizedOptionValues[option.name];
+
+        return `${option.name.toLowerCase()}=${value?.toLowerCase()}`;
+      })
+      .sort()
+      .join("|");
+
+    if (seenCombinations.has(combinationKey)) {
+      throw new AppError(
+        409,
+        `Duplicate variant combination for SKU "${sku}".`,
+      );
+    }
+
+    seenCombinations.add(combinationKey);
+
+    return {
+      ...variant,
+      sku,
+      optionValues: normalizedOptionValues,
+      attributes: variant.attributes ?? {},
+    };
+  });
+};
+
+// --------------------------------------------------
+// Split uploaded files by multipart field name
+// --------------------------------------------------
+
+export const splitImageFiles = (
+  files: Record<string, UploadFile[]>,
+) => {
+  const generalFiles = files.productImages ?? [];
+
+  const groupedFiles: GroupedImageFiles[] = [];
+
+  for (const [field, fileList] of Object.entries(files)) {
+    if (!field.startsWith(OPTION_IMAGE_PREFIX)) continue;
+    if (!fileList.length) continue;
+
+    const encodedGroup = field.slice(OPTION_IMAGE_PREFIX.length);
+    const separatorIndex = encodedGroup.indexOf(":");
+
+    if (separatorIndex === -1) {
+      throw new AppError(400, `Invalid image field: ${field}.`);
+    }
+
+    let optionName: string;
+    let optionValue: string;
+
+    try {
+      optionName = decodeURIComponent(
+        encodedGroup.slice(0, separatorIndex),
+      );
+
+      optionValue = decodeURIComponent(
+        encodedGroup.slice(separatorIndex + 1),
+      );
+    } catch {
+      throw new AppError(400, `Invalid image field encoding: ${field}.`);
+    }
+
+    if (!optionName.trim() || !optionValue.trim()) {
+      throw new AppError(400, `Invalid image field: ${field}.`);
+    }
+
+    groupedFiles.push({
+      optionName: optionName.trim(),
+      optionValue: optionValue.trim(),
+      files: fileList,
+    });
+  }
+
+  return {
+    generalFiles,
+    groupedFiles,
+  };
+};
+
+// --------------------------------------------------
+// Validate image groups against product options
+//
+// Product.imageAttribute stores one option name.
+// Therefore, all grouped images must use the same
+// option, for example Color.
+// --------------------------------------------------
+
+export const validateImageGroups = (
+  groupedFiles: GroupedImageFiles[],
+  options: ProductOptionInput[],
+) => {
+  if (groupedFiles.length === 0) {
+    return null;
+  }
+
+  const firstOptionName = groupedFiles[0]?.optionName;
+
+  const matchingOption = options.find(
+    (option) =>
+      option.name.toLowerCase() === firstOptionName?.toLowerCase(),
+  );
+
+  if (!matchingOption) {
+    throw new AppError(
+      400,
+      `Unknown image option "${firstOptionName}".`,
+    );
+  }
+
+  const seenGroups = new Set<string>();
+
+  for (const group of groupedFiles) {
+    if (group.optionName.toLowerCase() !== firstOptionName?.toLowerCase()) {
+      throw new AppError(
+        400,
+        "All grouped images must use the same product option.",
+      );
+    }
+
+    const validValue = matchingOption.values.find(
+      (value) => value.toLowerCase() === group.optionValue.toLowerCase(),
+    );
+
+    if (!validValue) {
+      throw new AppError(
+        400,
+        `"${group.optionValue}" is not a valid value for "${matchingOption.name}".`,
+      );
+    }
+
+    const groupKey = validValue.toLowerCase();
+
+    if (seenGroups.has(groupKey)) {
+      throw new AppError(
+        409,
+        `Duplicate image group for "${validValue}".`,
+      );
+    }
+
+    seenGroups.add(groupKey);
+
+    // Normalize the value to match the actual option value.
+    group.optionName = matchingOption.name;
+    group.optionValue = validValue;
+  }
+
+  return matchingOption.name;
+};
+
+// --------------------------------------------------
+// Create upload jobs
+// --------------------------------------------------
+
+export const buildUploadJobs = (
+  generalFiles: UploadFile[],
+  groupedFiles: GroupedImageFiles[],
+  folder: string,
+): UploadJob[] => {
+  const jobs: UploadJob[] = [];
+
+  for (const file of generalFiles) {
+    jobs.push({
+      file,
+      folder,
+      optionName: null,
+      optionValue: null,
+    });
+  }
+
+  for (const group of groupedFiles) {
+    for (const file of group.files) {
+      jobs.push({
+        file,
+        folder,
+        optionName: group.optionName,
+        optionValue: group.optionValue,
+      });
+    }
+  }
+
+  return jobs;
+};
+
+// --------------------------------------------------
+// Upload images with limited concurrency
+// --------------------------------------------------
+
+export const uploadImageJobs = async (
+  jobs: UploadJob[],
+  startPosition: number,
+  uploadedPublicIds: string[],
+): Promise<ImageRow[]> => {
+  const rows: ImageRow[] = [];
+
+  for (
+    let start = 0;
+    start < jobs.length;
+    start += UPLOAD_CONCURRENCY
+  ) {
+    const batch = jobs.slice(start, start + UPLOAD_CONCURRENCY);
+
+    const results = await Promise.allSettled(
+      batch.map(async (job, index): Promise<ImageRow> => {
+        if (!job.file.mimetype) {
+          throw new AppError(400, "Image MIME type is missing.");
+        }
+
+        const uploaded = await CloudinaryService.upload(job.file, {
+          folder: job.folder,
+        });
+
+        if (!uploaded.public_id) {
+          throw new AppError(
+            500,
+            "Uploaded image public ID is missing.",
+          );
+        }
+
+        // Track immediately so the caller can roll back on failure.
+        uploadedPublicIds.push(uploaded.public_id);
+
+        return {
+          url: uploaded.secure_url,
+          urlName: job.file.originalname,
+          publicId: uploaded.public_id,
+          type: job.file.mimetype,
+          position: startPosition + start + index,
+          groupValue: job.optionValue,
+          // Resolved after OptionValue records are created.
+          optionValueId: null,
+        };
+      }),
+    );
+
+    const failed = results.find(
+      (result) => result.status === "rejected",
+    );
+
+    if (failed?.status === "rejected") {
+      throw failed.reason;
+    }
+
+    for (const result of results) {
+      if (result.status === "fulfilled") {
+        rows.push(result.value);
+      }
+    }
+  }
+
+  return rows;
+};
+
+// --------------------------------------------------
+// Roll back successful Cloudinary uploads
+// --------------------------------------------------
+
+// export const rollbackCloudinaryUploads = async (
+//   publicIds: string[],
+// ) => {
+//   await Promise.allSettled(
+//     publicIds.map((publicId) =>
+//       CloudinaryService.deleteFile(publicId),
+//     ),
+//   );
+// };

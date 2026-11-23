@@ -5,7 +5,7 @@ import AppError from "../../errorHelpers/AppError";
 import { IQueryParams } from "../../interfaces/query.interface";
 import { catchAsync } from "../../shared/catchAsync";
 import { sendResponse } from "../../shared/sendResponse";
-import { VARIANT_IMAGE_PREFIX } from "./product.helpers";
+import { OPTION_IMAGE_PREFIX } from "./product.helpers";
 import { ProductServices } from "./product.service";
 import { createProductSchema, updateProductSchema } from "./product.validation";
 
@@ -44,36 +44,44 @@ const getAllProductsForAdmin = catchAsync(
     },
 );
 
+
 const createProduct = catchAsync(async (req: Request, res: Response) => {
+    console.log("req.body.data", req.body);
+    console.log("files", req.files);
+
     let rawData: unknown;
+
     try {
+        if (typeof req.body.data !== "string") {
+            throw new Error("Missing data");
+        }
+
         rawData = JSON.parse(req.body.data);
     } catch {
         throw new AppError(
             status.BAD_REQUEST,
-            "`data` must be a valid JSON string",
+            '"data" must be a valid JSON string.',
         );
     }
 
     const payload = createProductSchema.parse(rawData);
 
-    const uploadedFiles = (req.files ?? []) as (UploadFile & {
-        fieldname: string;
-    })[];
+    const uploadedFiles = (req.files ?? []) as (
+        UploadFile & { fieldname: string }
+    )[];
 
     const files: Record<string, UploadFile[]> = {};
 
     for (const file of uploadedFiles) {
         const field = file.fieldname;
 
-        // upload.any() accepts every field name, so reject the ones we don't use
         if (
             field !== "productImages" &&
-            !field.startsWith(VARIANT_IMAGE_PREFIX)
+            !field.startsWith(OPTION_IMAGE_PREFIX)
         ) {
             throw new AppError(
                 status.BAD_REQUEST,
-                `Unexpected file field "${field}"`,
+                `Unexpected file field "${field}".`,
             );
         }
 
@@ -90,22 +98,56 @@ const createProduct = catchAsync(async (req: Request, res: Response) => {
     });
 });
 
+
 const updateProduct = catchAsync(async (req: Request, res: Response) => {
     const { id } = req.params;
-    const payload = updateProductSchema.parse(JSON.parse(req.body.data));
 
-    const uploadedFiles = (req.files ?? []) as (UploadFile & {
-        fieldname: string;
-    })[];
+    // 1. Parse product data
+    let rawData: unknown;
+
+    try {
+        if (typeof req.body.data !== "string") {
+            throw new Error("Missing data");
+        }
+
+        rawData = JSON.parse(req.body.data);
+    } catch {
+        throw new AppError(
+            status.BAD_REQUEST,
+            '"data" must be a valid JSON string.',
+        );
+    }
+
+    // 2. Validate update data
+    const payload = updateProductSchema.parse(rawData);
+
+    // 3. Collect uploaded files by field name
+    const uploadedFiles = (req.files ?? []) as (
+        UploadFile & { fieldname: string }
+    )[];
 
     const files: Record<string, UploadFile[]> = {};
 
     for (const file of uploadedFiles) {
-        (files[file.fieldname] ??= []).push(file);
+        const field = file.fieldname;
+
+        // Reject unexpected file fields here too
+        if (
+            field !== "productImages" &&
+            !field.startsWith(OPTION_IMAGE_PREFIX)
+        ) {
+            throw new AppError(
+                status.BAD_REQUEST,
+                `Unexpected file field "${field}".`,
+            );
+        }
+
+        (files[field] ??= []).push(file);
     }
 
+    // 4. Call service
     const result = await ProductServices.updateProduct(
-        id as string,
+        id,
         payload,
         files,
     );
@@ -117,6 +159,7 @@ const updateProduct = catchAsync(async (req: Request, res: Response) => {
         data: result,
     });
 });
+
 
 // const deleteProduct = catchAsync(async (req: Request, res: Response) => {
 //     const { id } = req.params;
