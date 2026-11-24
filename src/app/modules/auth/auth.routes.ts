@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { UserRole } from "../../../generated/enums";
 import { checkAuth } from "../../middleware/auth";
-import { AuthController, getMe } from "./auth.controller";
+import { AuthController } from "./auth.controller";
 
 const router: Router = Router();
 
@@ -10,7 +10,7 @@ router.post("/login", AuthController.loginUser);
 router.get(
     "/me",
     checkAuth(UserRole.ADMIN, UserRole.USER, UserRole.MODERATOR),
-    getMe,
+    AuthController.getMe,
 );
 router.post("/refresh-token", AuthController.getNewToken);
 router.post(

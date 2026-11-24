@@ -5,6 +5,7 @@ import { auth } from "../../../lib/auth";
 import { prisma } from "../../../lib/prisma";
 import { envVars } from "../../config/env";
 import AppError from "../../errorHelpers/AppError";
+import { IRequestUser } from "../../interfaces/requestUser.interface";
 import { jwtUtils } from "../../utils/jwt";
 import { tokenUtils } from "../../utils/token";
 import {
@@ -100,6 +101,30 @@ const loginUser = async (payload: ILoginUserPayload) => {
         accessToken,
         refreshToken,
     };
+};
+
+const getMe = async (user: IRequestUser) => {
+    const isUserExists = await prisma.user.findUnique({
+        where: {
+            id: user.userId,
+        },
+        select: {
+            id: true,
+            name: true,
+            email: true,
+            role: true,
+        },
+    });
+
+    if (!isUserExists) {
+        throw new AppError(status.NOT_FOUND, "User not found");
+    }
+
+    const { id, ...rest } = isUserExists;
+
+    const formattedData = { userId: id, ...rest };
+
+    return formattedData;
 };
 
 const getNewToken = async (refreshToken: string, sessionToken: string) => {
@@ -336,6 +361,7 @@ const googleLoginSuccess = async (session: Record<string, any>) => {
 export const AuthService = {
     registerUser,
     loginUser,
+    getMe,
     getNewToken,
     changePassword,
     logoutUser,

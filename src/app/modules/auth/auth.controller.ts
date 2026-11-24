@@ -140,12 +140,17 @@ const resetPassword = catchAsync(async (req: Request, res: Response) => {
     });
 });
 
-export const getMe = async (req: Request, res: Response) => {
-    res.status(200).json({
+const getMe = catchAsync(async (req: Request, res: Response) => {
+    const user = req.user;
+    console.log({ user });
+    const result = await AuthService.getMe(user);
+    sendResponse(res, {
+        httpStatusCode: status.OK,
         success: true,
-        data: req.user,
+        message: "User profile fetched successfully",
+        data: result,
     });
-};
+});
 
 const getNewToken = catchAsync(async (req: Request, res: Response) => {
     const refreshToken = req.cookies.refreshToken;

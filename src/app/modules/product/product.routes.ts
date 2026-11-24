@@ -14,19 +14,6 @@ router.get(
     ProductController.getAllProductsForAdmin,
 );
 
-// router.post(
-//     "/test",
-//     checkAuth(UserRole.ADMIN),
-//     // upload.fields([
-//     //     { name: "productImages", maxCount: 10 },
-//     //     { name: "variantImages_TSHIRT-BLACK-M", maxCount: 5 },
-//     //     { name: "variantImages_TSHIRT-BLACK-L", maxCount: 5 },
-//     //     { name: "variantImages_TSHIRT-WHITE-M", maxCount: 5 },
-//     // ]),
-//     upload.any(),
-//     createProduct,
-// );
-
 router.post(
     "/",
     // checkAuth(UserRole.ADMIN),
