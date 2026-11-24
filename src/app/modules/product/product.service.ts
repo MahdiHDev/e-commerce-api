@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { Prisma, Product } from "../../../generated/client";
 import { prisma } from "../../../lib/prisma";
 import { CloudinaryService } from "../../../services/cloudinary";
@@ -7,203 +8,199 @@ import AppError from "../../errorHelpers/AppError";
 import { IQueryParams } from "../../interfaces/query.interface";
 import { QueryBuilder } from "../../utils/QueryBuilder";
 import {
-    productFilterableFields,
-    productSearchableFields,
-    productSortableFields,
+  productFilterableFields,
+  productSearchableFields,
+  productSortableFields,
 } from "./product.constant";
 import {
-    ImageRow,
-    prepareOptions,
-    prepareVariants,
-    resolveImageAttribute,
-    splitImageFiles,
-    // toAttrs,
-    uploadImageJobs,
-    validateImageGroups,
-    OPTION_IMAGE_PREFIX,
-    UploadJob,
+  ImageRow,
+  prepareOptions,
+  prepareVariants,
+  // resolveImageAttribute,
+  splitImageFiles,
+  // toAttrs,
+  uploadImageJobs,
+  UploadJob,
+  validateImageGroups,
 } from "./product.helpers";
 import {
-    CreateProductPayload,
-    UpdateProductPayload,
+  CreateProductPayload,
+  UpdateProductPayload,
 } from "./product.validation";
 
-// how many Cloudinary uploads run at the same time
 const UPLOAD_CONCURRENCY = 5;
 
-// type UploadJob = {
-//     file: UploadFile;
-//     folder: string;
-//     groupValue?: string | null; // null = shared image
-// };
-
 type ProductListRow = Product & {
-    images: { url: string }[];
-    variants: {
-        id: string;
-        price: unknown; // Prisma Decimal
-        compareAtPrice: unknown;
-        stockQuantity: number;
-    }[];
-    brand: { id: string; name: string; slug: string } | null;
-    category: { id: string; name: string; slug: string };
+  images: { url: string }[];
+  variants: {
+    id: string;
+    price: unknown; // Prisma Decimal
+    compareAtPrice: unknown;
+    stockQuantity: number;
+  }[];
+  brand: { id: string; name: string; slug: string } | null;
+  category: { id: string; name: string; slug: string };
 };
 
 const toNumber = (value: unknown) => {
-    const n = Number(value);
-    return value !== undefined && value !== "" && Number.isFinite(n)
-        ? n
-        : undefined;
+  const n = Number(value);
+  return value !== undefined && value !== "" && Number.isFinite(n)
+    ? n
+    : undefined;
 };
 
 // GET /products?searchTerm=shirt&category.slug=shirt&minPrice=300&maxPrice=800
 //              &attributes[color]=Black&attributes[size]=M&page=1&limit=12&sortBy=name&sortOrder=asc
 const getAllProducts = async (
-    query: IQueryParams,
-    options: { publicOnly?: boolean } = {},
+  query: IQueryParams,
+  options: { publicOnly?: boolean } = {},
 ) => {
-    const sortBy =
-        typeof query.sortBy === "string" &&
-        productSortableFields.includes(query.sortBy)
-            ? query.sortBy
-            : "createdAt";
+  const sortBy =
+    typeof query.sortBy === "string" &&
+    productSortableFields.includes(query.sortBy)
+      ? query.sortBy
+      : "createdAt";
 
-    // variant-level filters: all of them must be matched by the SAME variant
-    const minPrice = toNumber(query.minPrice);
-    const maxPrice = toNumber(query.maxPrice);
+  // variant-level filters: all of them must be matched by the SAME variant
+  const minPrice = toNumber(query.minPrice);
+  const maxPrice = toNumber(query.maxPrice);
 
-    const rawAttributes = query.attributes as unknown;
-    const attributeFilters =
-        typeof rawAttributes === "object" &&
-        rawAttributes !== null &&
-        !Array.isArray(rawAttributes)
-            ? Object.entries(rawAttributes as Record<string, unknown>).filter(
-                  (entry): entry is [string, string] =>
-                      typeof entry[1] === "string" && entry[1] !== "",
-              )
-            : [];
+  const rawAttributes = query.attributes as unknown;
+  const attributeFilters =
+    typeof rawAttributes === "object" &&
+    rawAttributes !== null &&
+    !Array.isArray(rawAttributes)
+      ? Object.entries(rawAttributes as Record<string, unknown>).filter(
+          (entry): entry is [string, string] =>
+            typeof entry[1] === "string" && entry[1] !== "",
+        )
+      : [];
 
-    const needsVariantFilter =
-        minPrice !== undefined ||
-        maxPrice !== undefined ||
-        attributeFilters.length > 0;
+  const needsVariantFilter =
+    minPrice !== undefined ||
+    maxPrice !== undefined ||
+    attributeFilters.length > 0;
 
-    const variantFilter: Prisma.ProductVariantWhereInput = {
-        isDeleted: false,
-        ...(minPrice !== undefined || maxPrice !== undefined
-            ? {
-                  price: {
-                      ...(minPrice !== undefined ? { gte: minPrice } : {}),
-                      ...(maxPrice !== undefined ? { lte: maxPrice } : {}),
-                  },
-              }
-            : {}),
-        ...(attributeFilters.length > 0
-            ? {
-                  AND: attributeFilters.map(([key, value]) => ({
-                      attributes: { path: [key], equals: value },
-                  })),
-              }
-            : {}),
-    };
+  const variantFilter: Prisma.ProductVariantWhereInput = {
+    isDeleted: false,
+    ...(minPrice !== undefined || maxPrice !== undefined
+      ? {
+          price: {
+            ...(minPrice !== undefined ? { gte: minPrice } : {}),
+            ...(maxPrice !== undefined ? { lte: maxPrice } : {}),
+          },
+        }
+      : {}),
+    ...(attributeFilters.length > 0
+      ? {
+          AND: attributeFilters.map(([key, value]) => ({
+            attributes: { path: [key], equals: value },
+          })),
+        }
+      : {}),
+  };
 
-    const queryBuilder = new QueryBuilder<
-        Product,
-        Prisma.ProductWhereInput,
-        Prisma.ProductInclude
-    >(
-        prisma.product,
-        { ...query, sortBy },
-        {
-            searchableFields: productSearchableFields,
-            filterableFields: productFilterableFields,
-        },
-    );
+  const queryBuilder = new QueryBuilder<
+    Product,
+    Prisma.ProductWhereInput,
+    Prisma.ProductInclude
+  >(
+    prisma.product,
+    { ...query, sortBy },
+    {
+      searchableFields: productSearchableFields,
+      filterableFields: productFilterableFields,
+    },
+  );
 
-    const result = await queryBuilder
-        .search()
-        .filter()
-        // where() runs after filter(), so these always win over anything in the URL
-        .where({
-            isDeleted: false,
-            ...(options.publicOnly && { status: "ACTIVE" as const }),
-            ...(needsVariantFilter && { variants: { some: variantFilter } }),
-        })
-        .include({
-            images: {
-                where: { isDeleted: false },
-                orderBy: { position: "asc" },
-                take: 1, // cover image
-                select: { url: true },
-            },
-            variants: {
-                where: { isDeleted: false },
-                orderBy: { position: "asc" },
-                select: {
-                    id: true,
-                    price: true,
-                    compareAtPrice: true,
-                    stockQuantity: true,
-                },
-            },
-            brand: { select: { id: true, name: true, slug: true } },
-            category: { select: { id: true, name: true, slug: true } },
-        })
-        .paginate()
-        .sort()
-        // no .fields() here: the card shape below is built from images + variants
-        .execute();
+  const result = await queryBuilder
+    .search()
+    .filter()
+    // where() runs after filter(), so these always win over anything in the URL
+    .where({
+      isDeleted: false,
+      ...(options.publicOnly && { status: "ACTIVE" as const }),
+      ...(needsVariantFilter && { variants: { some: variantFilter } }),
+    })
+    .include({
+      images: {
+        where: { isDeleted: false },
+        orderBy: { position: "asc" },
+        // take: 1, // cover image
+        select: { url: true },
+      },
+      variants: {
+        where: { isDeleted: false },
+        orderBy: { position: "asc" },
+        // select: {
+        //     id: true,
+        //     price: true,
+        //     compareAtPrice: true,
+        //     stockQuantity: true,
+        // },
+      },
+      brand: { select: { id: true, name: true, slug: true } },
+      category: { select: { id: true, name: true, slug: true } },
+    })
+    .paginate()
+    .sort()
+    // no .fields() here: the card shape below is built from images + variants
+    .execute();
 
-    const products = result.data as unknown as ProductListRow[];
+  const products = result.data as unknown as ProductListRow[];
 
-    return {
-        data: products.map((product) => {
-            const prices = product.variants.map((v) => Number(v.price));
-            const defaultVariant =
-                product.variants.find((v) => v.stockQuantity > 0) ??
-                product.variants[0];
+  return {
+    data: products.map((product) => {
+      const prices = product.variants.map((v) => Number(v.price));
+      const defaultVariant =
+        product.variants.find((v) => v.stockQuantity > 0) ??
+        product.variants[0];
 
-            return {
-                id: product.id,
-                name: product.name,
-                slug: product.slug,
-                status: product.status,
-                createdAt: product.createdAt,
-                brand: product.brand,
-                category: product.category,
-                image: product.images[0]?.url ?? null,
-                minPrice: prices.length ? Math.min(...prices) : null,
-                maxPrice: prices.length ? Math.max(...prices) : null,
-                inStock: product.variants.some((v) => v.stockQuantity > 0),
-                isSingleVariant: product.variants.length === 1,
-                variantCount: product.variants.length,
-                defaultVariantId: defaultVariant?.id ?? null,
-            };
-        }),
-        meta: result.meta,
-    };
+      return {
+        id: product.id,
+        name: product.name,
+        slug: product.slug,
+        status: product.status,
+        createdAt: product.createdAt,
+        brand: product.brand,
+        category: product.category,
+        image: product.images[0]?.url ?? null,
+        minPrice: prices.length ? Math.min(...prices) : null,
+        maxPrice: prices.length ? Math.max(...prices) : null,
+        inStock: product.variants.some((v) => v.stockQuantity > 0),
+        isSingleVariant: product.variants.length === 1,
+        variantCount: product.variants.length,
+        defaultVariantId: defaultVariant?.id ?? null,
+      };
+    }),
+    meta: result.meta,
+  };
 };
 
 const createProduct = async (
   payload: CreateProductPayload,
   files: Record<string, UploadFile[]> = {},
 ) => {
+  const totalStart = performance.now();
+
+  const logTime = (label: string, start: number) => {
+    console.log(
+      `[CREATE PRODUCT] ${label}: ${(performance.now() - start).toFixed(2)} ms`,
+    );
+  };
+
+  let stepStart = performance.now();
+
   const uploadedPublicIds: string[] = [];
 
   try {
-    const {
-      name,
-      slug,
-      description,
-      categoryId,
-      brandId,
-      status,
-    } = payload;
+    const { name, slug, description, categoryId, brandId, status } = payload;
 
-    const formattedSlug = slug
-      .trim()
-      .toLowerCase()
-      .replace(/\s+/g, "-");
+    const formattedSlug = slug.trim().toLowerCase().replace(/\s+/g, "-");
+
+    // ------------------------------------------
+    // 1. Check duplicate product slug
+    // ------------------------------------------
 
     const existingProduct = await prisma.product.findFirst({
       where: {
@@ -219,10 +216,7 @@ const createProduct = async (
         );
       }
 
-      throw new AppError(
-        409,
-        "A product with this slug already exists.",
-      );
+      throw new AppError(409, "A product with this slug already exists.");
     }
 
     // ------------------------------------------
@@ -253,62 +247,48 @@ const createProduct = async (
       }
     }
 
+    logTime("Basic database checks", stepStart);
+
+    stepStart = performance.now();
+
     // ------------------------------------------
     // 3. Prepare options and variants
     // ------------------------------------------
 
     const options = prepareOptions(payload.options);
 
-    const variants = prepareVariants(
-      payload.variants,
-      options,
-    );
+    const variants = prepareVariants(payload.variants, options);
+    // Your existing code...
+    logTime("Prepare options and variants", stepStart);
 
-    // Check SKUs against existing database records.
-    const existingVariant = await prisma.productVariant.findFirst({
-      where: {
-        sku: {
-          in: variants.map((variant) => variant.sku),
-        },
-      },
-    });
+    stepStart = performance.now();
 
-    if (existingVariant) {
-      throw new AppError(
-        409,
-        `Variant with SKU "${existingVariant.sku}" already exists.`,
-      );
+    // Check Duplicate SKUs
+    const skus = variants.map((variant) => variant.sku);
+
+    if (new Set(skus).size !== skus.length) {
+      throw new AppError(400, "Duplicate SKUs found in variants.");
     }
+
+    logTime("SKU validation", stepStart);
+
+    stepStart = performance.now();
 
     // ------------------------------------------
     // 4. Read and validate image groups
     // ------------------------------------------
 
-    const {
-      generalFiles,
-      groupedFiles,
-    } = splitImageFiles(files);
+    const { generalFiles, groupedFiles } = splitImageFiles(files);
 
     const totalFiles =
       generalFiles.length +
-      groupedFiles.reduce(
-        (sum, group) => sum + group.files.length,
-        0,
-      );
+      groupedFiles.reduce((sum, group) => sum + group.files.length, 0);
 
     if (totalFiles === 0) {
-      throw new AppError(
-        400,
-        "At least one product image is required.",
-      );
+      throw new AppError(400, "At least one product image is required.");
     }
 
-    // Product.imageAttribute stores the option name
-    // used to group product images, e.g. "Color".
-    const imageAttribute = validateImageGroups(
-      groupedFiles,
-      options,
-    );
+    const imageAttribute = validateImageGroups(groupedFiles, options);
 
     // ------------------------------------------
     // 5. Prepare Cloudinary upload jobs
@@ -336,15 +316,15 @@ const createProduct = async (
     // 6. Upload images
     // ------------------------------------------
 
-    const imageRows = await uploadImageJobs(
-      jobs,
-      0,
-      uploadedPublicIds,
-    );
+    const imageRows = await uploadImageJobs(jobs, 0, uploadedPublicIds);
+
+    logTime("Cloudinary uploads", stepStart);
+
+    stepStart = performance.now();
 
     // ------------------------------------------
-    // 7. Create product, options, variants and images
-    //    in one database transaction
+    // 7. Create product, options, variants
+    //    and images in one transaction
     // ------------------------------------------
 
     const createdProduct = await prisma.$transaction(
@@ -397,64 +377,80 @@ const createProduct = async (
 
         for (const option of product.productOptions) {
           for (const value of option.values) {
-            const key =
-              `${option.name.toLowerCase()}=${value.value.toLowerCase()}`;
+            const key = `${option.name.toLowerCase()}=${value.value.toLowerCase()}`;
 
             optionValueMap.set(key, value.id);
           }
         }
 
         // --------------------------------------
-        // 9. Create variants and their option relations
+        // 9. Bulk create variants and
+        //    their option relationships
         // --------------------------------------
 
+        const variantRows: Prisma.ProductVariantCreateManyInput[] = [];
+
+        const variantOptionRows: Prisma.VariantOptionValueCreateManyInput[] =
+          [];
+
         for (const variant of variants) {
-          const selectedValueIds = Object.entries(
-            variant.optionValues,
-          ).map(([optionName, optionValue]) => {
-            const key =
-              `${optionName.toLowerCase()}=${optionValue.toLowerCase()}`;
+          const variantId = randomUUID();
 
-            const optionValueId = optionValueMap.get(key);
+          const selectedValueIds = Object.entries(variant.optionValues).map(
+            ([optionName, optionValue]) => {
+              const key = `${optionName.toLowerCase()}=${optionValue.toLowerCase()}`;
 
-            if (!optionValueId) {
-              throw new AppError(
-                400,
-                `Invalid option value: ${optionName} - ${optionValue}.`,
-              );
-            }
+              const optionValueId = optionValueMap.get(key);
 
-            return optionValueId;
+              if (!optionValueId) {
+                throw new AppError(
+                  400,
+                  `Invalid option value: ${optionName} - ${optionValue}.`,
+                );
+              }
+
+              return optionValueId;
+            },
+          );
+
+          // Prepare variant record.
+          variantRows.push({
+            id: variantId,
+            productId: product.id,
+            sku: variant.sku,
+            price: new Prisma.Decimal(variant.price),
+
+            compareAtPrice:
+              variant.compareAtPrice == null
+                ? null
+                : new Prisma.Decimal(variant.compareAtPrice),
+
+            stockQuantity: variant.stockQuantity,
+            position: variant.position ?? 0,
+
+            attributes: (variant.attributes ?? {}) as Prisma.InputJsonValue,
           });
 
-          await tx.productVariant.create({
-            data: {
-              productId: product.id,
-              sku: variant.sku,
+          // Prepare variant-option relationships.
+          for (const optionValueId of selectedValueIds) {
+            variantOptionRows.push({
+              variantId,
+              optionValueId,
+            });
+          }
+        }
 
-              price: new Prisma.Decimal(variant.price),
+        // Insert all variants in one query.
+        if (variantRows.length > 0) {
+          await tx.productVariant.createMany({
+            data: variantRows,
+          });
+        }
 
-              compareAtPrice:
-                variant.compareAtPrice == null
-                  ? null
-                  : new Prisma.Decimal(variant.compareAtPrice),
-
-              stockQuantity: variant.stockQuantity,
-              position: variant.position ?? 0,
-
-              attributes:
-                (variant.attributes ?? {}) as Prisma.InputJsonValue,
-
-              optionValues: {
-                create: selectedValueIds.map((optionValueId) => ({
-                  optionValue: {
-                    connect: {
-                      id: optionValueId,
-                    },
-                  },
-                })),
-              },
-            },
+        // Insert all variant-option relationships in one query.
+        if (variantOptionRows.length > 0) {
+          await tx.variantOptionValue.createMany({
+            data: variantOptionRows,
           });
         }
 
@@ -468,8 +464,7 @@ const createProduct = async (
           let optionValueId: string | null = null;
 
           if (job?.optionName && job?.optionValue) {
-            const key =
-              `${job.optionName.toLowerCase()}=${job.optionValue.toLowerCase()}`;
+            const key = `${job.optionName.toLowerCase()}=${job.optionValue.toLowerCase()}`;
 
             optionValueId = optionValueMap.get(key) ?? null;
 
@@ -549,307 +544,302 @@ const createProduct = async (
           },
         });
       },
-  {
-    maxWait: 10000,
-    timeout: 20000,
-  },
+      {
+        maxWait: 5000,
+        timeout: 10000,
+      },
+    );
+
+    logTime("Database transaction", stepStart);
+
+    console.log(
+      `[CREATE PRODUCT] Total: ${(performance.now() - totalStart).toFixed(
+        2,
+      )} ms`,
     );
 
     return createdProduct;
   } catch (error) {
-    // ------------------------------------------
-    // 12. Roll back Cloudinary uploads
-    // ------------------------------------------
-
-    // await rollbackCloudinaryUploads(uploadedPublicIds);
+    // Roll back Cloudinary uploads if database creation fails.
+    // Use your existing rollback helper here if available.
 
     throw error;
   }
 };
 
-
 const updateProduct = async (
-    productId: string,
-    payload: UpdateProductPayload,
-    files: Record<string, UploadFile[]> = {},
+  productId: string,
+  payload: UpdateProductPayload,
+  files: Record<string, UploadFile[]> = {},
 ) => {
-    const uploadedPublicIds: string[] = [];
+  const uploadedPublicIds: string[] = [];
 
-    try {
-        // ------------------------------------------
-        // 1. Find the product
-        // ------------------------------------------
+  try {
+    // ------------------------------------------
+    // 1. Find the product
+    // ------------------------------------------
 
-        const product = await prisma.product.findFirst({
-            where: { id: productId, isDeleted: false },
-            select: {
-                id: true,
-                slug: true,
-                imageAttribute: true,
-                variants: {
-                    where: { isDeleted: false },
-                    select: {
-                        id: true,
-                        sku: true,
-                        price: true,
-                        compareAtPrice: true,
-                        attributes: true,
-                    },
-                },
-            },
-        });
+    const product = await prisma.product.findFirst({
+      where: { id: productId, isDeleted: false },
+      select: {
+        id: true,
+        slug: true,
+        imageAttribute: true,
+        variants: {
+          where: { isDeleted: false },
+          select: {
+            id: true,
+            sku: true,
+            price: true,
+            compareAtPrice: true,
+            attributes: true,
+          },
+        },
+      },
+    });
 
-        if (!product) throw new AppError(404, "Product not found");
+    if (!product) throw new AppError(404, "Product not found");
 
-        const { generalFiles, groupedFiles } = splitImageFiles(files);
-        const variantUpdates = payload.variants ?? [];
-        const hasFiles = generalFiles.length > 0 || groupedFiles.length > 0;
+    const { generalFiles, groupedFiles } = splitImageFiles(files);
+    const variantUpdates = payload.variants ?? [];
+    const hasFiles = generalFiles.length > 0 || groupedFiles.length > 0;
 
-        const hasFieldUpdates = (
-            [
-                "name",
-                "slug",
-                "description",
-                "categoryId",
-                "brandId",
-                "status",
-            ] as const
-        ).some((key) => payload[key] !== undefined);
+    const hasFieldUpdates = (
+      [
+        "name",
+        "slug",
+        "description",
+        "categoryId",
+        "brandId",
+        "status",
+      ] as const
+    ).some((key) => payload[key] !== undefined);
 
-        if (!hasFieldUpdates && variantUpdates.length === 0 && !hasFiles) {
-            throw new AppError(400, "Nothing to update.");
-        }
-
-        // ------------------------------------------
-        // 2. Slug (only checked when it actually changes)
-        // ------------------------------------------
-
-        let formattedSlug: string | undefined;
-
-        if (payload.slug !== undefined) {
-            formattedSlug = payload.slug
-                .trim()
-                .toLowerCase()
-                .replace(/\s+/g, "-");
-
-            if (formattedSlug !== product.slug) {
-                const taken = await prisma.product.findFirst({
-                    where: { slug: formattedSlug, id: { not: productId } },
-                });
-
-                if (taken) {
-                    throw new AppError(
-                        409,
-                        taken.isDeleted
-                            ? "A deleted product with this slug already exists. Please restore it instead."
-                            : "A product with this slug already exists.",
-                    );
-                }
-            }
-        }
-
-        // ------------------------------------------
-        // 3. Category + brand (brandId: null removes the brand)
-        // ------------------------------------------
-
-        if (payload.categoryId !== undefined) {
-            const category = await prisma.category.findFirst({
-                where: { id: payload.categoryId, isDeleted: false },
-            });
-            if (!category) throw new AppError(404, "Category not found");
-        }
-
-        if (payload.brandId) {
-            const brand = await prisma.brand.findFirst({
-                where: { id: payload.brandId, isDeleted: false },
-            });
-            if (!brand) throw new AppError(404, "Brand not found");
-        }
-
-        // ------------------------------------------
-        // 4. Variant updates (matched by SKU)
-        // ------------------------------------------
-
-        const variantBySku = new Map<string, (typeof product.variants)[number]>(
-            product.variants.map((v) => [v.sku, v] as const),
-        );
-        const seenSkus = new Set<string>();
-
-        for (const update of variantUpdates) {
-            if (seenSkus.has(update.sku)) {
-                throw new AppError(
-                    409,
-                    `SKU "${update.sku}" appears twice in the request.`,
-                );
-            }
-            seenSkus.add(update.sku);
-
-            const current = variantBySku.get(update.sku);
-            if (!current) {
-                throw new AppError(
-                    404,
-                    `Variant with SKU "${update.sku}" not found on this product.`,
-                );
-            }
-
-            // check the final values, not just the ones that were sent
-            const nextPrice = update.price ?? Number(current.price);
-            const nextCompare =
-                update.compareAtPrice !== undefined
-                    ? update.compareAtPrice
-                    : current.compareAtPrice === null
-                      ? null
-                      : Number(current.compareAtPrice);
-
-            if (nextCompare !== null && nextCompare < nextPrice) {
-                throw new AppError(
-                    400,
-                    `Variant "${update.sku}": compare at price must not be lower than the price.`,
-                );
-            }
-        }
-
-        // ------------------------------------------
-        // 5. New image files: groups must be existing values of the image attribute
-        // ------------------------------------------
-
-        const { imageAttribute } = product;
-
-        if (groupedFiles.length > 0) {
-            if (!imageAttribute) {
-                throw new AppError(
-                    400,
-                    "This product shares one gallery across all variants. Upload to productImages instead.",
-                );
-            }
-
-            const validValues = new Set(
-                product.variants.map(
-                    (v) => toAttrs(v.attributes)[imageAttribute] ?? "",
-                ),
-            );
-
-            for (const { group } of groupedFiles) {
-                if (!validValues.has(group)) {
-                    throw new AppError(
-                        400,
-                        `"${group}" is not a ${imageAttribute} of this product. Existing: ${[...validValues].join(", ")}.`,
-                    );
-                }
-            }
-        }
-
-        // ------------------------------------------
-        // 6. Upload new images (after all validation passed)
-        // ------------------------------------------
-
-        let imageRows: ImageRow[] = [];
-
-        if (hasFiles) {
-            const last = await prisma.productImage.aggregate({
-                where: { productId, isDeleted: false },
-                _max: { position: true },
-            });
-            const startPosition = (last._max.position ?? -1) + 1;
-
-            const jobs: UploadJob[] = [
-                ...generalFiles.map((file) => ({
-                    file,
-                    folder: CloudinaryFolders.product.productImage,
-                    groupValue: null,
-                })),
-                ...groupedFiles.flatMap(({ group, files: groupFiles }) =>
-                    groupFiles.map((file) => ({
-                        file,
-                        folder: CloudinaryFolders.product.variantImage,
-                        groupValue: group,
-                    })),
-                ),
-            ];
-
-            imageRows = await uploadImageJobs(
-                jobs,
-                startPosition,
-                uploadedPublicIds,
-            );
-        }
-
-        // ------------------------------------------
-        // 7. Save everything in one transaction
-        // ------------------------------------------
-
-        return await prisma.$transaction(async (tx) => {
-            await tx.product.update({
-                where: { id: productId },
-                data: {
-                    ...(payload.name !== undefined && {
-                        name: payload.name.trim(),
-                    }),
-                    ...(formattedSlug !== undefined && { slug: formattedSlug }),
-                    ...(payload.description !== undefined && {
-                        description: payload.description.trim(),
-                    }),
-                    ...(payload.categoryId !== undefined && {
-                        categoryId: payload.categoryId,
-                    }),
-                    ...(payload.brandId !== undefined && {
-                        brandId: payload.brandId,
-                    }),
-                    ...(payload.status !== undefined && {
-                        status: payload.status,
-                    }),
-                },
-            });
-
-            for (const update of variantUpdates) {
-                await tx.productVariant.update({
-                    where: { id: variantBySku.get(update.sku)!.id },
-                    data: {
-                        ...(update.price !== undefined && {
-                            price: update.price,
-                        }),
-                        ...(update.compareAtPrice !== undefined && {
-                            compareAtPrice: update.compareAtPrice,
-                        }),
-                        ...(update.stockQuantity !== undefined && {
-                            stockQuantity: update.stockQuantity,
-                        }),
-                    },
-                });
-            }
-
-            if (imageRows.length > 0) {
-                await tx.productImage.createMany({
-                    data: imageRows.map((row) => ({ ...row, productId })),
-                });
-            }
-
-            return tx.product.findUniqueOrThrow({
-                where: { id: productId },
-                include: {
-                    images: {
-                        where: { isDeleted: false },
-                        orderBy: { position: "asc" },
-                    },
-                    variants: {
-                        where: { isDeleted: false },
-                        orderBy: { position: "asc" },
-                    },
-                    brand: true,
-                    category: true,
-                },
-            });
-        });
-    } catch (error) {
-        // allSettled: one failed delete must not hide the original error
-        await Promise.allSettled(
-            uploadedPublicIds.map((publicId) =>
-                CloudinaryService.delete(publicId),
-            ),
-        );
-
-        throw error;
+    if (!hasFieldUpdates && variantUpdates.length === 0 && !hasFiles) {
+      throw new AppError(400, "Nothing to update.");
     }
+
+    // ------------------------------------------
+    // 2. Slug (only checked when it actually changes)
+    // ------------------------------------------
+
+    let formattedSlug: string | undefined;
+
+    if (payload.slug !== undefined) {
+      formattedSlug = payload.slug.trim().toLowerCase().replace(/\s+/g, "-");
+
+      if (formattedSlug !== product.slug) {
+        const taken = await prisma.product.findFirst({
+          where: { slug: formattedSlug, id: { not: productId } },
+        });
+
+        if (taken) {
+          throw new AppError(
+            409,
+            taken.isDeleted
+              ? "A deleted product with this slug already exists. Please restore it instead."
+              : "A product with this slug already exists.",
+          );
+        }
+      }
+    }
+
+    // ------------------------------------------
+    // 3. Category + brand (brandId: null removes the brand)
+    // ------------------------------------------
+
+    if (payload.categoryId !== undefined) {
+      const category = await prisma.category.findFirst({
+        where: { id: payload.categoryId, isDeleted: false },
+      });
+      if (!category) throw new AppError(404, "Category not found");
+    }
+
+    if (payload.brandId) {
+      const brand = await prisma.brand.findFirst({
+        where: { id: payload.brandId, isDeleted: false },
+      });
+      if (!brand) throw new AppError(404, "Brand not found");
+    }
+
+    // ------------------------------------------
+    // 4. Variant updates (matched by SKU)
+    // ------------------------------------------
+
+    const variantBySku = new Map<string, (typeof product.variants)[number]>(
+      product.variants.map((v) => [v.sku, v] as const),
+    );
+    const seenSkus = new Set<string>();
+
+    for (const update of variantUpdates) {
+      if (seenSkus.has(update.sku)) {
+        throw new AppError(
+          409,
+          `SKU "${update.sku}" appears twice in the request.`,
+        );
+      }
+      seenSkus.add(update.sku);
+
+      const current = variantBySku.get(update.sku);
+      if (!current) {
+        throw new AppError(
+          404,
+          `Variant with SKU "${update.sku}" not found on this product.`,
+        );
+      }
+
+      // check the final values, not just the ones that were sent
+      const nextPrice = update.price ?? Number(current.price);
+      const nextCompare =
+        update.compareAtPrice !== undefined
+          ? update.compareAtPrice
+          : current.compareAtPrice === null
+            ? null
+            : Number(current.compareAtPrice);
+
+      if (nextCompare !== null && nextCompare < nextPrice) {
+        throw new AppError(
+          400,
+          `Variant "${update.sku}": compare at price must not be lower than the price.`,
+        );
+      }
+    }
+
+    // ------------------------------------------
+    // 5. New image files: groups must be existing values of the image attribute
+    // ------------------------------------------
+
+    const { imageAttribute } = product;
+
+    if (groupedFiles.length > 0) {
+      if (!imageAttribute) {
+        throw new AppError(
+          400,
+          "This product shares one gallery across all variants. Upload to productImages instead.",
+        );
+      }
+
+      const validValues = new Set(
+        product.variants.map(
+          (v) => toAttrs(v.attributes)[imageAttribute] ?? "",
+        ),
+      );
+
+      for (const { group } of groupedFiles) {
+        if (!validValues.has(group)) {
+          throw new AppError(
+            400,
+            `"${group}" is not a ${imageAttribute} of this product. Existing: ${[...validValues].join(", ")}.`,
+          );
+        }
+      }
+    }
+
+    // ------------------------------------------
+    // 6. Upload new images (after all validation passed)
+    // ------------------------------------------
+
+    let imageRows: ImageRow[] = [];
+
+    if (hasFiles) {
+      const last = await prisma.productImage.aggregate({
+        where: { productId, isDeleted: false },
+        _max: { position: true },
+      });
+      const startPosition = (last._max.position ?? -1) + 1;
+
+      const jobs: UploadJob[] = [
+        ...generalFiles.map((file) => ({
+          file,
+          folder: CloudinaryFolders.product.productImage,
+          groupValue: null,
+        })),
+        ...groupedFiles.flatMap(({ group, files: groupFiles }) =>
+          groupFiles.map((file) => ({
+            file,
+            folder: CloudinaryFolders.product.variantImage,
+            groupValue: group,
+          })),
+        ),
+      ];
+
+      imageRows = await uploadImageJobs(jobs, startPosition, uploadedPublicIds);
+    }
+
+    // ------------------------------------------
+    // 7. Save everything in one transaction
+    // ------------------------------------------
+
+    return await prisma.$transaction(async (tx) => {
+      await tx.product.update({
+        where: { id: productId },
+        data: {
+          ...(payload.name !== undefined && {
+            name: payload.name.trim(),
+          }),
+          ...(formattedSlug !== undefined && { slug: formattedSlug }),
+          ...(payload.description !== undefined && {
+            description: payload.description.trim(),
+          }),
+          ...(payload.categoryId !== undefined && {
+            categoryId: payload.categoryId,
+          }),
+          ...(payload.brandId !== undefined && {
+            brandId: payload.brandId,
+          }),
+          ...(payload.status !== undefined && {
+            status: payload.status,
+          }),
+        },
+      });
+
+      for (const update of variantUpdates) {
+        await tx.productVariant.update({
+          where: { id: variantBySku.get(update.sku)!.id },
+          data: {
+            ...(update.price !== undefined && {
+              price: update.price,
+            }),
+            ...(update.compareAtPrice !== undefined && {
+              compareAtPrice: update.compareAtPrice,
+            }),
+            ...(update.stockQuantity !== undefined && {
+              stockQuantity: update.stockQuantity,
+            }),
+          },
+        });
+      }
+
+      if (imageRows.length > 0) {
+        await tx.productImage.createMany({
+          data: imageRows.map((row) => ({ ...row, productId })),
+        });
+      }
+
+      return tx.product.findUniqueOrThrow({
+        where: { id: productId },
+        include: {
+          images: {
+            where: { isDeleted: false },
+            orderBy: { position: "asc" },
+          },
+          variants: {
+            where: { isDeleted: false },
+            orderBy: { position: "asc" },
+          },
+          brand: true,
+          category: true,
+        },
+      });
+    });
+  } catch (error) {
+    // allSettled: one failed delete must not hide the original error
+    await Promise.allSettled(
+      uploadedPublicIds.map((publicId) => CloudinaryService.delete(publicId)),
+    );
+
+    throw error;
+  }
 };
 
 // const deleteProduct = async (id: string) => {

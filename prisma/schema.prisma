@@ -208,7 +208,7 @@ model ProductVariant {
   productId String
   product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
 
-  sku String @unique
+  sku String
 
   price          Decimal  @db.Decimal(10, 2)
   compareAtPrice Decimal? @db.Decimal(10, 2)
@@ -229,6 +229,7 @@ model ProductVariant {
   deletedAt DateTime?
 
   @@index([productId])
+  @@unique([productId, sku])
 }
 
 model ProductOption {
