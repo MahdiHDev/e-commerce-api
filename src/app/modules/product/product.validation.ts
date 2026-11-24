@@ -113,11 +113,33 @@ export const createProductSchema = z.object({
 
   options: z.array(productOptionSchema).default([]),
 
+
   variants: z
-    .array(productVariantSchema)
-    .min(1, "At least one product variant is required"),
+    .array(productVariantSchema).default([]),
 
   images: z.array(productImageSchema).default([]),
+
+
+// for non-variant products
+   sku: z.string().trim().min(1, "SKU is required").optional(),
+
+  price: z.coerce
+    .number()
+    .positive("Price must be greater than 0").optional(),
+
+  compareAtPrice: z.coerce
+    .number()
+    .positive("Compare at price must be greater than 0")
+    .nullable()
+    .optional(),
+
+  stockQuantity: z.coerce
+    .number()
+    .int("Stock quantity must be an integer")
+    .min(0, "Stock quantity cannot be negative")
+    .optional(),
+
+  attributes: z.record(z.string(), z.string()).optional(),
 
 }).superRefine((product, ctx) => {
   // Check duplicate option names

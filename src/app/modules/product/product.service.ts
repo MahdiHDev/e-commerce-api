@@ -257,7 +257,24 @@ const createProduct = async (
 
     const options = prepareOptions(payload.options);
 
-    const variants = prepareVariants(payload.variants, options);
+    const hasVariants = (payload.variants?.length ?? 0) > 0;
+
+    console.log("Prepare options", payload?.variants);
+
+    const variants =
+      hasVariants
+        ? prepareVariants(payload.variants, options)
+        : [
+            {
+              sku: payload?.sku,
+              price: payload?.price,
+              compareAtPrice: payload?.compareAtPrice ?? null,
+              stockQuantity: payload.stockQuantity ?? 0,
+              position: 0,
+              attributes: {},
+              optionValues: {},
+            },
+          ];
     // Your existing code...
     logTime("Prepare options and variants", stepStart);
 
@@ -347,7 +364,7 @@ const createProduct = async (
 
             status,
             imageAttribute: imageAttribute ?? null,
-
+            noVariants: hasVariants ? false : true,
             productOptions: {
               create: options.map((option) => ({
                 name: option.name,
@@ -417,8 +434,8 @@ const createProduct = async (
           variantRows.push({
             id: variantId,
             productId: product.id,
-            sku: variant.sku,
-            price: new Prisma.Decimal(variant.price),
+            sku: variant.sku as string,
+            price: new Prisma.Decimal(variant.price as number),
 
             compareAtPrice:
               variant.compareAtPrice == null

@@ -307,11 +307,12 @@ export type ProductVariantOrderByWithRelationInput = {
 
 export type ProductVariantWhereUniqueInput = Prisma.AtLeast<{
   id?: string
-  sku?: string
+  productId_sku?: Prisma.ProductVariantProductIdSkuCompoundUniqueInput
   AND?: Prisma.ProductVariantWhereInput | Prisma.ProductVariantWhereInput[]
   OR?: Prisma.ProductVariantWhereInput[]
   NOT?: Prisma.ProductVariantWhereInput | Prisma.ProductVariantWhereInput[]
   productId?: Prisma.StringFilter<"ProductVariant"> | string
+  sku?: Prisma.StringFilter<"ProductVariant"> | string
   price?: Prisma.DecimalFilter<"ProductVariant"> | runtime.Decimal | runtime.DecimalJsLike | number | string
   compareAtPrice?: Prisma.DecimalNullableFilter<"ProductVariant"> | runtime.Decimal | runtime.DecimalJsLike | number | string | null
   stockQuantity?: Prisma.IntFilter<"ProductVariant"> | number
@@ -325,7 +326,7 @@ export type ProductVariantWhereUniqueInput = Prisma.AtLeast<{
   cartItems?: Prisma.CartItemListRelationFilter
   orderItems?: Prisma.OrderItemListRelationFilter
   optionValues?: Prisma.VariantOptionValueListRelationFilter
-}, "id" | "sku">
+}, "id" | "productId_sku">
 
 export type ProductVariantOrderByWithAggregationInput = {
   id?: Prisma.SortOrder
@@ -489,6 +490,11 @@ export type ProductVariantListRelationFilter = {
 
 export type ProductVariantOrderByRelationAggregateInput = {
   _count?: Prisma.SortOrder
+}
+
+export type ProductVariantProductIdSkuCompoundUniqueInput = {
+  productId: string
+  sku: string
 }
 
 export type ProductVariantCountOrderByAggregateInput = {

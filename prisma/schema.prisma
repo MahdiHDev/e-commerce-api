@@ -187,6 +187,9 @@ model Product {
   imageAttribute String? // set automatically by createProduct
 
   variants    ProductVariant[]
+  hasVariants Boolean          @default(false) //remove it after resetting db -- this one replaced by noVariants
+  noVariants  Boolean          @default(false)
+
   images      ProductImage[]
   collections ProductCollection[]
 
@@ -228,8 +231,8 @@ model ProductVariant {
   updatedAt DateTime  @updatedAt
   deletedAt DateTime?
 
-  @@index([productId])
   @@unique([productId, sku])
+  @@index([productId])
 }
 
 model ProductOption {

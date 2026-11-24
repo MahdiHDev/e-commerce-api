@@ -194,6 +194,8 @@ export const ProductScalarFieldEnum = {
   brandId: 'brandId',
   status: 'status',
   imageAttribute: 'imageAttribute',
+  noVariants: 'noVariants',
+  hasVariants: 'hasVariants',
   isDeleted: 'isDeleted',
   createdAt: 'createdAt',
   updatedAt: 'updatedAt',
