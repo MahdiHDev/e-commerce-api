@@ -25,6 +25,33 @@ export class QueryBuilder<
     private sortOrder: "asc" | "desc" = "desc";
     private selectFields: Record<string, boolean> | undefined;
 
+    private buildRelationFilter(
+        parts: string[],
+        condition: unknown,
+    ): Record<string, unknown> {
+        let result: Record<string, unknown> = {
+            [parts[parts.length - 1]!]: condition,
+        };
+
+        const relationParts = parts.slice(0, -1);
+
+        for (let i = relationParts.length - 1; i >= 0; i--) {
+            const relation = relationParts[i]!;
+
+            const relationPath = relationParts.slice(0, i + 1).join(".");
+
+            const relationType =
+                this.config.relationTypes?.[relationPath] ?? "one";
+
+            result = {
+                [relation]:
+                    relationType === "many" ? { some: result } : { is: result },
+            };
+        }
+
+        return result;
+    }
+
     constructor(
         private model: PrismaModelDelegate,
         private queryParams: IQueryParams,
@@ -46,59 +73,28 @@ export class QueryBuilder<
     search(): this {
         const { searchTerm } = this.queryParams;
         const { searchableFields } = this.config;
-        // doctorSearchableFields = ['user.name', 'user.email', 'specialties.specialty.title' , 'specialties.specialty.description']
-        if (searchTerm && searchableFields && searchableFields.length > 0) {
+
+        if (searchTerm && searchableFields?.length) {
             const searchConditions: Record<string, unknown>[] =
                 searchableFields.map((field) => {
-                    if (field.includes(".")) {
-                        const parts = field.split(".");
+                    const parts = field.split(".");
 
-                        if (parts.length === 2) {
-                            const [relation, nestedField] = parts;
+                    const stringFilter: PrismaStringFilter =
+                        parts.length === 2 &&
+                        parts[0] === "user" &&
+                        parts[1] === "email"
+                            ? {
+                                  startsWith: searchTerm,
+                                  mode: "insensitive",
+                              }
+                            : {
+                                  contains: searchTerm,
+                                  mode: "insensitive",
+                              };
 
-                            const stringFilter: PrismaStringFilter =
-                                relation === "user" && nestedField === "email"
-                                    ? {
-                                          startsWith: searchTerm,
-                                          mode: "insensitive",
-                                      }
-                                    : {
-                                          contains: searchTerm,
-                                          mode: "insensitive",
-                                      };
-
-                            return {
-                                [relation!]: {
-                                    some: {
-                                        [nestedField!]: stringFilter,
-                                    },
-                                },
-                            };
-                        } else if (parts.length === 3) {
-                            const [relation, nestedRelation, nestedField] =
-                                parts;
-
-                            const stringFilter: PrismaStringFilter = {
-                                contains: searchTerm,
-                                mode: "insensitive" as const,
-                            };
-
-                            return {
-                                [relation!]: {
-                                    some: {
-                                        [nestedRelation!]: {
-                                            [nestedField!]: stringFilter,
-                                        },
-                                    },
-                                },
-                            };
-                        }
+                    if (parts.length > 1) {
+                        return this.buildRelationFilter(parts, stringFilter);
                     }
-                    // direct field
-                    const stringFilter: PrismaStringFilter = {
-                        contains: searchTerm,
-                        mode: "insensitive" as const,
-                    };
 
                     return {
                         [field]: stringFilter,
@@ -111,11 +107,86 @@ export class QueryBuilder<
 
             const countWhereConditions = this.countQuery
                 .where as PrismaWhereConditions;
+
             countWhereConditions.OR = searchConditions;
         }
 
         return this;
     }
+
+    // search(): this {
+    //     const { searchTerm } = this.queryParams;
+    //     const { searchableFields } = this.config;
+    //     // doctorSearchableFields = ['user.name', 'user.email', 'specialties.specialty.title' , 'specialties.specialty.description']
+    //     if (searchTerm && searchableFields && searchableFields.length > 0) {
+    //         const searchConditions: Record<string, unknown>[] =
+    //             searchableFields.map((field) => {
+    //                 if (field.includes(".")) {
+    //                     const parts = field.split(".");
+
+    //                     if (parts.length === 2) {
+    //                         const [relation, nestedField] = parts;
+
+    //                         const stringFilter: PrismaStringFilter =
+    //                             relation === "user" && nestedField === "email"
+    //                                 ? {
+    //                                       startsWith: searchTerm,
+    //                                       mode: "insensitive",
+    //                                   }
+    //                                 : {
+    //                                       contains: searchTerm,
+    //                                       mode: "insensitive",
+    //                                   };
+
+    //                         return {
+    //                             [relation!]: {
+    //                                 some: {
+    //                                     [nestedField!]: stringFilter,
+    //                                 },
+    //                             },
+    //                         };
+    //                     } else if (parts.length === 3) {
+    //                         const [relation, nestedRelation, nestedField] =
+    //                             parts;
+
+    //                         const stringFilter: PrismaStringFilter = {
+    //                             contains: searchTerm,
+    //                             mode: "insensitive" as const,
+    //                         };
+
+    //                         return {
+    //                             [relation!]: {
+    //                                 some: {
+    //                                     [nestedRelation!]: {
+    //                                         [nestedField!]: stringFilter,
+    //                                     },
+    //                                 },
+    //                             },
+    //                         };
+    //                     }
+    //                 }
+    //                 // direct field
+    //                 const stringFilter: PrismaStringFilter = {
+    //                     contains: searchTerm,
+    //                     mode: "insensitive" as const,
+    //                 };
+
+    //                 return {
+    //                     [field]: stringFilter,
+    //                 };
+    //             });
+
+    //         const whereConditions = this.query.where as PrismaWhereConditions;
+
+    //         whereConditions.OR = searchConditions;
+
+    //         const countWhereConditions = this.countQuery
+    //             .where as PrismaWhereConditions;
+    //         countWhereConditions.OR = searchConditions;
+    //     }
+
+    //     return this;
+    // }
     // /doctors?searchTerm=john&page=1&sortBy=name&specialty=cardiology&appointmentFee[lt]=100 => {}
     // { specialty: 'cardiology', appointmentFee: { lt: '100' } }
     filter(): this {
@@ -161,91 +232,29 @@ export class QueryBuilder<
 
             // /doctors?user.name=John => { user: { name: 'John' } }
             if (key.includes(".")) {
-                const parts = key.split(".");
-
                 if (filterableFields && !filterableFields.includes(key)) {
                     return;
                 }
 
-                if (parts.length === 2) {
-                    const [relation, nestedField] = parts;
+                const parts = key.split(".");
+                const parsedValue = this.parseFilterValue(value);
 
-                    if (!queryWhere[relation!]) {
-                        queryWhere[relation!] = {};
-                        countQueryWhere[relation!] = {};
-                    }
+                const relationFilter = this.buildRelationFilter(
+                    parts,
+                    parsedValue,
+                );
 
-                    const queryRelation = queryWhere[relation!] as Record<
-                        string,
-                        unknown
-                    >;
-                    const countRelation = countQueryWhere[relation!] as Record<
-                        string,
-                        unknown
-                    >;
+                Object.assign(
+                    queryWhere,
+                    this.deepMerge(queryWhere, relationFilter),
+                );
 
-                    queryRelation[nestedField!] = this.parseFilterValue(value);
-                    countRelation[nestedField!] = this.parseFilterValue(value);
-                    return;
-                } else if (parts.length === 3) {
-                    const [relation, nestedRelation, nestedField] = parts;
+                Object.assign(
+                    countQueryWhere,
+                    this.deepMerge(countQueryWhere, relationFilter),
+                );
 
-                    if (!queryWhere[relation!]) {
-                        queryWhere[relation!] = {
-                            some: {},
-                        };
-                        countQueryWhere[relation!] = {
-                            some: {},
-                        };
-                    }
-
-                    const queryRelation = queryWhere[relation!] as Record<
-                        string,
-                        unknown
-                    >;
-                    const countRelation = countQueryWhere[relation!] as Record<
-                        string,
-                        unknown
-                    >;
-
-                    if (!queryRelation.some) {
-                        queryRelation.some = {};
-                    }
-                    if (!countRelation.some) {
-                        countRelation.some = {};
-                    }
-
-                    const querySome = queryRelation.some as Record<
-                        string,
-                        unknown
-                    >;
-                    const countSome = countRelation.some as Record<
-                        string,
-                        unknown
-                    >;
-
-                    if (!querySome[nestedRelation!]) {
-                        querySome[nestedRelation!] = {};
-                    }
-
-                    if (!countSome[nestedRelation!]) {
-                        countSome[nestedRelation!] = {};
-                    }
-
-                    const queryNestedRelation = querySome[
-                        nestedRelation!
-                    ] as Record<string, unknown>;
-                    const countNestedRelation = countSome[
-                        nestedRelation!
-                    ] as Record<string, unknown>;
-
-                    queryNestedRelation[nestedField!] =
-                        this.parseFilterValue(value);
-                    countNestedRelation[nestedField!] =
-                        this.parseFilterValue(value);
-
-                    return;
-                }
+                return;
             }
             if (!isAllowedField) {
                 return;

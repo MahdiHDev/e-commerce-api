@@ -103,6 +103,10 @@ const getAllProducts = async (
         {
             searchableFields: productSearchableFields,
             filterableFields: productFilterableFields,
+            relationTypes: {
+                variants: "many",
+                category: "one",
+            },
         },
     );
 
@@ -168,6 +172,20 @@ const getAllProducts = async (
         }),
         meta: result.meta,
     };
+};
+
+const getProductsById = async (id: string) => {
+    const result = await prisma.product.findUnique({
+        where: { id },
+        include: {
+            category: true,
+            images: true,
+            variants: true,
+            productOptions: true,
+        },
+    });
+
+    return result;
 };
 
 const createProduct = async (
@@ -1010,4 +1028,8 @@ const createProduct = async (
 //     return result;
 // };
 
-export const ProductServices = { getAllProducts, createProduct };
+export const ProductServices = {
+    getAllProducts,
+    getProductsById,
+    createProduct,
+};

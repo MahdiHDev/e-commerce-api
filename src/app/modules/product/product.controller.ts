@@ -44,6 +44,18 @@ const getAllProductsForAdmin = catchAsync(
     },
 );
 
+const getProductById = catchAsync(async (req: Request, res: Response) => {
+    const { id } = req.params;
+
+    const result = await ProductServices.getProductsById(id as string);
+
+    sendResponse(res, {
+        httpStatusCode: status.OK,
+        success: true,
+        message: "Product retrives successfully",
+        data: result,
+    });
+});
 
 const createProduct = catchAsync(async (req: Request, res: Response) => {
     console.log("req.body.data", req.body);
@@ -66,9 +78,9 @@ const createProduct = catchAsync(async (req: Request, res: Response) => {
 
     const payload = createProductSchema.parse(rawData);
 
-    const uploadedFiles = (req.files ?? []) as (
-        UploadFile & { fieldname: string }
-    )[];
+    const uploadedFiles = (req.files ?? []) as (UploadFile & {
+        fieldname: string;
+    })[];
 
     const files: Record<string, UploadFile[]> = {};
 
@@ -98,7 +110,6 @@ const createProduct = catchAsync(async (req: Request, res: Response) => {
     });
 });
 
-
 const updateProduct = catchAsync(async (req: Request, res: Response) => {
     const { id } = req.params;
 
@@ -122,9 +133,9 @@ const updateProduct = catchAsync(async (req: Request, res: Response) => {
     const payload = updateProductSchema.parse(rawData);
 
     // 3. Collect uploaded files by field name
-    const uploadedFiles = (req.files ?? []) as (
-        UploadFile & { fieldname: string }
-    )[];
+    const uploadedFiles = (req.files ?? []) as (UploadFile & {
+        fieldname: string;
+    })[];
 
     const files: Record<string, UploadFile[]> = {};
 
@@ -146,11 +157,7 @@ const updateProduct = catchAsync(async (req: Request, res: Response) => {
     }
 
     // 4. Call service
-    const result = await ProductServices.updateProduct(
-        id,
-        payload,
-        files,
-    );
+    const result = await ProductServices.updateProduct(id, payload, files);
 
     sendResponse(res, {
         httpStatusCode: status.OK,
@@ -159,7 +166,6 @@ const updateProduct = catchAsync(async (req: Request, res: Response) => {
         data: result,
     });
 });
-
 
 // const deleteProduct = catchAsync(async (req: Request, res: Response) => {
 //     const { id } = req.params;
@@ -190,6 +196,7 @@ const updateProduct = catchAsync(async (req: Request, res: Response) => {
 export const ProductController = {
     getAllProducts,
     getAllProductsForAdmin,
+    getProductById,
     createProduct,
     updateProduct,
 };

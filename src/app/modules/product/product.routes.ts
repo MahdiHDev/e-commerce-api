@@ -14,6 +14,8 @@ router.get(
     ProductController.getAllProductsForAdmin,
 );
 
+router.get("/:id", ProductController.getProductById);
+
 router.post(
     "/",
     // checkAuth(UserRole.ADMIN),

@@ -87,3 +87,12 @@ export interface IQueryResult<T> {
         totalPages: number;
     };
 }
+
+export type PrismaRelationType = "one" | "many";
+
+export interface IQueryConfig {
+    searchableFields?: string[];
+    filterableFields?: string[];
+
+    relationTypes?: Record<string, PrismaRelationType>;
+}

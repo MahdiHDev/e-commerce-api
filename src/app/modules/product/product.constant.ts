@@ -1,7 +1,13 @@
 // "variants.sku" works because the builder wraps 2-part search paths in `some` (to-many).
 // Don't add "brand.name" / "category.name": brand and category are to-one relations,
 // and `some` on them makes Prisma throw.
-export const productSearchableFields = ["name", "slug", "variants.sku"];
+export const productSearchableFields = [
+    "name",
+    "slug",
+    "variants.sku",
+    "category.name",
+    "category.slug",
+];
 
 // Keep this list explicit. An EMPTY list means "allow every field" in your builder.
 // Dotted keys are not wrapped in `some`, so only to-one relations belong here.
