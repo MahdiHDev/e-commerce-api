@@ -7,7 +7,10 @@ import { catchAsync } from "../../shared/catchAsync";
 import { sendResponse } from "../../shared/sendResponse";
 import { OPTION_IMAGE_PREFIX } from "./product.helpers";
 import { ProductServices } from "./product.service";
-import { createProductSchema, updateProductSchema } from "./product.validation";
+import {
+    createProductSchema,
+    updateProductSchema,
+} from "./product.validation";
 
 const getAllProducts = catchAsync(async (req: Request, res: Response) => {
     // storefront: only ACTIVE, non-deleted products
@@ -113,14 +116,11 @@ const createProduct = catchAsync(async (req: Request, res: Response) => {
 const updateProduct = catchAsync(async (req: Request, res: Response) => {
     const { id } = req.params;
 
-    // 1. Parse product data
     let rawData: unknown;
-
     try {
         if (typeof req.body.data !== "string") {
             throw new Error("Missing data");
         }
-
         rawData = JSON.parse(req.body.data);
     } catch {
         throw new AppError(
@@ -129,20 +129,15 @@ const updateProduct = catchAsync(async (req: Request, res: Response) => {
         );
     }
 
-    // 2. Validate update data
     const payload = updateProductSchema.parse(rawData);
 
-    // 3. Collect uploaded files by field name
     const uploadedFiles = (req.files ?? []) as (UploadFile & {
         fieldname: string;
     })[];
-
     const files: Record<string, UploadFile[]> = {};
 
     for (const file of uploadedFiles) {
         const field = file.fieldname;
-
-        // Reject unexpected file fields here too
         if (
             field !== "productImages" &&
             !field.startsWith(OPTION_IMAGE_PREFIX)
@@ -152,12 +147,14 @@ const updateProduct = catchAsync(async (req: Request, res: Response) => {
                 `Unexpected file field "${field}".`,
             );
         }
-
         (files[field] ??= []).push(file);
     }
 
-    // 4. Call service
-    const result = await ProductServices.updateProduct(id, payload, files);
+    const result = await ProductServices.updateProduct(
+        id as string,
+        payload,
+        files,
+    );
 
     sendResponse(res, {
         httpStatusCode: status.OK,

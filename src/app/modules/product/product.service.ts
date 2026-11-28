@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Prisma, Product } from "../../../generated/client";
 import { prisma } from "../../../lib/prisma";
+import { CloudinaryService } from "../../../services/cloudinary";
 import { UploadFile } from "../../../services/cloudinary/cloudinary.interface";
 import { CloudinaryFolders } from "../../config/cloudinary.folders";
 import AppError from "../../errorHelpers/AppError";
@@ -21,7 +22,10 @@ import {
     UploadJob,
     validateImageGroups,
 } from "./product.helpers";
-import { CreateProductPayload } from "./product.validation";
+import {
+    CreateProductPayload,
+    UpdateProductPayload,
+} from "./product.validation";
 
 type ProductListRow = Product & {
     images: { url: string }[];
@@ -177,15 +181,78 @@ const getAllProducts = async (
 const getProductsById = async (id: string) => {
     const result = await prisma.product.findUnique({
         where: { id },
-        include: {
-            category: true,
-            images: true,
-            variants: true,
-            productOptions: true,
+        select: {
+            id: true,
+            name: true,
+            slug: true,
+            description: true,
+            categoryId: true,
+            brandId: true,
+            status: true,
+            noVariants: true,
+            hasVariants: true,
+            imageAttribute: true,
+            category: { select: { id: true, name: true, slug: true } },
+            brand: { select: { id: true, name: true } },
+            images: {
+                where: { isDeleted: false },
+                orderBy: { position: "asc" },
+                select: {
+                    id: true,
+                    url: true,
+                    urlName: true,
+                    publicId: true,
+                    type: true,
+                    optionValueId: true,
+                    groupValue: true,
+                    position: true,
+                },
+            },
+            variants: {
+                where: { isDeleted: false },
+                orderBy: { position: "asc" },
+                select: {
+                    id: true,
+                    sku: true,
+                    price: true,
+                    compareAtPrice: true,
+                    stockQuantity: true,
+                    position: true,
+                    attributes: true,
+                },
+            },
+            productOptions: {
+                select: {
+                    id: true,
+                    name: true,
+                    productId: true,
+                    values: { select: { id: true, value: true } },
+                },
+            },
+            createdAt: true,
+            updatedAt: true,
         },
     });
 
-    return result;
+    if (!result) {
+        return null;
+    }
+
+    return {
+        ...result,
+        images: result.images.map(({ urlName, ...image }) => ({
+            ...image,
+            name: urlName,
+        })),
+        variants: result.variants.map((variant) => ({
+            ...variant,
+            price: Number(variant.price),
+            compareAtPrice:
+                variant.compareAtPrice === null
+                    ? null
+                    : Number(variant.compareAtPrice),
+        })),
+    };
 };
 
 const createProduct = async (
@@ -590,7 +657,12 @@ const createProduct = async (
         return createdProduct;
     } catch (error) {
         // Roll back Cloudinary uploads if database creation fails.
-        // Use your existing rollback helper here if available.
+
+        await Promise.all(
+            uploadedPublicIds.map((publicId) =>
+                CloudinaryService.delete(publicId),
+            ),
+        );
 
         throw error;
     }
@@ -871,165 +943,539 @@ const createProduct = async (
 //   }
 // };
 
-// const deleteProduct = async (id: string) => {
-//     const existingProduct = await prisma.product.findFirst({
-//         where: {
-//             id,
-//             isDeleted: false,
-//         },
-//         include: {
-//             variants: {
-//                 where: {
-//                     isDeleted: false,
-//                 },
-//             },
-//             images: {
-//                 where: {
-//                     isDeleted: false,
-//                 },
-//             },
-//         },
-//     });
+const updateProduct = async (
+    productId: string,
+    payload: UpdateProductPayload,
+    files: Record<string, UploadFile[]> = {},
+) => {
+    const uploadedPublicIds: string[] = [];
+    const publicIdsToDelete = new Set<string>();
+    let transactionCommitted = false;
 
-//     if (!existingProduct) {
-//         throw new AppError(404, "Product not found.");
-//     }
+    try {
+        const product = await prisma.product.findFirst({
+            where: { id: productId, isDeleted: false },
+            include: {
+                images: { where: { isDeleted: false } },
+                variants: { where: { isDeleted: false } },
+                productOptions: { include: { values: true } },
+            },
+        });
 
-//     const result = await prisma.$transaction(async (tx) => {
-//         // Soft-delete product images.
-//         await tx.productImage.updateMany({
-//             where: {
-//                 productId: id,
-//                 isDeleted: false,
-//             },
-//             data: {
-//                 isDeleted: true,
-//                 deletedAt: new Date(),
-//             },
-//         });
+        if (!product) {
+            throw new AppError(404, "Product not found.");
+        }
 
-//         // Soft-delete variant images.
-//         await tx.productVariantImage.updateMany({
-//             where: {
-//                 productVariantId: {
-//                     in: existingProduct.variants.map((variant) => variant.id),
-//                 },
-//                 isDeleted: false,
-//             },
-//             data: {
-//                 isDeleted: true,
-//                 deletedAt: new Date(),
-//             },
-//         });
+        const scalarKeys = [
+            "name",
+            "slug",
+            "description",
+            "categoryId",
+            "brandId",
+            "status",
+        ] as const;
+        const hasUpdate =
+            scalarKeys.some((key) => payload[key] !== undefined) ||
+            (payload.options?.length ?? 0) > 0 ||
+            (payload.variants?.length ?? 0) > 0 ||
+            (payload.images?.length ?? 0) > 0 ||
+            Object.values(files).some((fileList) => fileList.length > 0);
 
-//         // Soft-delete product variants.
-//         await tx.productVariant.updateMany({
-//             where: {
-//                 productId: id,
-//                 isDeleted: false,
-//             },
-//             data: {
-//                 isDeleted: true,
-//                 deletedAt: new Date(),
-//             },
-//         });
+        if (!hasUpdate) {
+            throw new AppError(400, "Nothing to update.");
+        }
 
-//         // Soft-delete the product.
-//         const deletedProduct = await tx.product.update({
-//             where: {
-//                 id,
-//             },
-//             data: {
-//                 isDeleted: true,
-//                 deletedAt: new Date(),
-//             },
-//         });
+        let formattedSlug: string | undefined;
+        if (payload.slug !== undefined) {
+            formattedSlug = payload.slug
+                .trim()
+                .toLowerCase()
+                .replace(/\s+/g, "-");
+            if (formattedSlug !== product.slug) {
+                const taken = await prisma.product.findFirst({
+                    where: { slug: formattedSlug, id: { not: productId } },
+                });
+                if (taken) {
+                    throw new AppError(
+                        409,
+                        taken.isDeleted
+                            ? "A deleted product with this slug already exists. Please restore it instead."
+                            : "A product with this slug already exists.",
+                    );
+                }
+            }
+        }
 
-//         return deletedProduct;
-//     });
+        if (payload.categoryId !== undefined) {
+            const category = await prisma.category.findFirst({
+                where: { id: payload.categoryId, isDeleted: false },
+            });
+            if (!category) throw new AppError(404, "Category not found.");
+        }
 
-//     return result;
-// };
+        if (payload.brandId) {
+            const brand = await prisma.brand.findFirst({
+                where: { id: payload.brandId, isDeleted: false },
+            });
+            if (!brand) throw new AppError(404, "Brand not found.");
+        }
 
-// const restoreProduct = async (id: string) => {
-//     const existingProduct = await prisma.product.findFirst({
-//         where: {
-//             id,
-//             isDeleted: true,
-//         },
-//     });
+        const variantBySku = new Map(
+            product.variants.map((variant) => [variant.sku, variant]),
+        );
+        const seenUpdateSkus = new Set<string>();
+        for (const update of payload.variants ?? []) {
+            const normalizedSku = update.sku.toLowerCase();
+            if (seenUpdateSkus.has(normalizedSku)) {
+                throw new AppError(
+                    409,
+                    `SKU "${update.sku}" appears twice in the request.`,
+                );
+            }
+            seenUpdateSkus.add(normalizedSku);
 
-//     if (!existingProduct) {
-//         throw new AppError(404, "Deleted product not found.");
-//     }
+            const current = variantBySku.get(update.sku);
+            if (!current) {
+                throw new AppError(
+                    404,
+                    `Variant with SKU "${update.sku}" not found on this product.`,
+                );
+            }
 
-//     const result = await prisma.$transaction(async (tx) => {
-//         // Restore product variants.
-//         await tx.productVariant.updateMany({
-//             where: {
-//                 productId: id,
-//                 isDeleted: true,
-//             },
-//             data: {
-//                 isDeleted: false,
-//                 deletedAt: null,
-//             },
-//         });
+            const nextPrice = update.price ?? Number(current.price);
+            const nextCompare =
+                update.compareAtPrice !== undefined
+                    ? update.compareAtPrice
+                    : current.compareAtPrice === null
+                      ? null
+                      : Number(current.compareAtPrice);
+            if (nextCompare !== null && nextCompare < nextPrice) {
+                throw new AppError(
+                    400,
+                    `Variant "${update.sku}": compare at price must not be lower than the price.`,
+                );
+            }
+        }
 
-//         // Restore product gallery images.
-//         await tx.productImage.updateMany({
-//             where: {
-//                 productId: id,
-//                 isDeleted: true,
-//             },
-//             data: {
-//                 isDeleted: false,
-//                 deletedAt: null,
-//             },
-//         });
+        const finalOptions = product.productOptions.map((option) => ({
+            id: option.id,
+            name: option.name,
+            values: option.values.map((value) => ({
+                id: value.id,
+                value: value.value,
+            })),
+        }));
 
-//         // Restore variant images belonging to this product's variants.
-//         const variants = await tx.productVariant.findMany({
-//             where: {
-//                 productId: id,
-//             },
-//             select: {
-//                 id: true,
-//             },
-//         });
+        for (const update of payload.options ?? []) {
+            const current = update.id
+                ? finalOptions.find((option) => option.id === update.id)
+                : undefined;
+            if (update.id && !current) {
+                throw new AppError(
+                    404,
+                    `Product option "${update.id}" not found.`,
+                );
+            }
+            if (
+                finalOptions.some(
+                    (option) =>
+                        option.id !== update.id &&
+                        option.name.toLowerCase() ===
+                            update.name.trim().toLowerCase(),
+                )
+            ) {
+                throw new AppError(
+                    409,
+                    `Duplicate product option: ${update.name.trim()}.`,
+                );
+            }
 
-//         await tx.productVariantImage.updateMany({
-//             where: {
-//                 productVariantId: {
-//                     in: variants.map((variant) => variant.id),
-//                 },
-//                 isDeleted: true,
-//             },
-//             data: {
-//                 isDeleted: false,
-//                 deletedAt: null,
-//             },
-//         });
+            const target = current ?? { id: "", name: "", values: [] };
+            if (!current) {
+                finalOptions.push(target);
+            }
+            target.name = update.name.trim();
 
-//         // Restore the product.
-//         const restoredProduct = await tx.product.update({
-//             where: {
-//                 id,
-//             },
-//             data: {
-//                 isDeleted: false,
-//                 deletedAt: null,
-//             },
-//         });
+            for (const valueUpdate of update.values ?? []) {
+                const currentValue = valueUpdate.id
+                    ? target.values.find((value) => value.id === valueUpdate.id)
+                    : undefined;
+                if (valueUpdate.id && !currentValue) {
+                    throw new AppError(
+                        404,
+                        `Option value "${valueUpdate.id}" not found.`,
+                    );
+                }
+                if (
+                    target.values.some(
+                        (value) =>
+                            value.id !== valueUpdate.id &&
+                            value.value.toLowerCase() ===
+                                valueUpdate.value.toLowerCase(),
+                    )
+                ) {
+                    throw new AppError(
+                        409,
+                        `Duplicate value "${valueUpdate.value}" in option "${update.name.trim()}".`,
+                    );
+                }
+                if (currentValue) {
+                    currentValue.value = valueUpdate.value.trim();
+                } else {
+                    target.values.push({
+                        id: "",
+                        value: valueUpdate.value.trim(),
+                    });
+                }
+            }
+        }
 
-//         return restoredProduct;
-//     });
+        const { generalFiles, groupedFiles } = splitImageFiles(files);
+        if (groupedFiles.length > 0) {
+            validateImageGroups(
+                groupedFiles,
+                finalOptions.map((option) => ({
+                    name: option.name,
+                    values: option.values.map((value) => value.value),
+                })),
+            );
+        }
 
-//     return result;
-// };
+        for (const imageUpdate of payload.images ?? []) {
+            if (!imageUpdate.id) {
+                throw new AppError(
+                    400,
+                    "Existing image updates must include an image id.",
+                );
+            }
+            if (!product.images.some((image) => image.id === imageUpdate.id)) {
+                throw new AppError(
+                    404,
+                    `Product image "${imageUpdate.id}" not found.`,
+                );
+            }
+            if (imageUpdate.optionValueId) {
+                const valid = finalOptions.some((option) =>
+                    option.values.some(
+                        (value) => value.id === imageUpdate.optionValueId,
+                    ),
+                );
+                if (!valid) {
+                    throw new AppError(
+                        400,
+                        "optionValueId does not belong to this product.",
+                    );
+                }
+            }
+        }
+
+        for (const imageUpdate of payload.images ?? []) {
+            const currentImage = product.images.find(
+                (image) => image.id === imageUpdate.id,
+            );
+            if (
+                currentImage &&
+                (imageUpdate.isDeleted === true ||
+                    (imageUpdate.publicId !== undefined &&
+                        imageUpdate.publicId !== currentImage.publicId))
+            ) {
+                publicIdsToDelete.add(currentImage.publicId);
+            }
+        }
+
+        let allJobs: UploadJob[] = [
+            ...generalFiles.map((file) => ({
+                file,
+                folder: CloudinaryFolders.product.productImage,
+                optionName: null,
+                optionValue: null,
+            })),
+            ...groupedFiles.flatMap((group) =>
+                group.files.map((file) => ({
+                    file,
+                    folder: CloudinaryFolders.product.variantImage,
+                    optionName: group.optionName,
+                    optionValue: group.optionValue,
+                })),
+            ),
+        ];
+
+        let imageRows: Awaited<ReturnType<typeof uploadImageJobs>> = [];
+        if (allJobs.length > 0) {
+            imageRows = await uploadImageJobs(allJobs, 0, uploadedPublicIds);
+        }
+
+        const result = await prisma.$transaction(
+            async (tx) => {
+                await tx.product.update({
+                    where: { id: productId },
+                    data: {
+                        ...(payload.name !== undefined && {
+                            name: payload.name.trim(),
+                        }),
+                        ...(formattedSlug !== undefined && {
+                            slug: formattedSlug,
+                        }),
+                        ...(payload.description !== undefined && {
+                            description: payload.description?.trim() ?? null,
+                        }),
+                        ...(payload.categoryId !== undefined && {
+                            categoryId: payload.categoryId,
+                        }),
+                        ...(payload.brandId !== undefined && {
+                            brandId: payload.brandId,
+                        }),
+                        ...(payload.status !== undefined && {
+                            status: payload.status,
+                        }),
+                    },
+                });
+
+                for (const update of payload.variants ?? []) {
+                    const current = variantBySku.get(update.sku)!;
+                    await tx.productVariant.update({
+                        where: { id: current.id },
+                        data: {
+                            ...(update.price !== undefined && {
+                                price: new Prisma.Decimal(update.price),
+                            }),
+                            ...(update.compareAtPrice !== undefined && {
+                                compareAtPrice:
+                                    update.compareAtPrice === null
+                                        ? null
+                                        : new Prisma.Decimal(
+                                              update.compareAtPrice,
+                                          ),
+                            }),
+                            ...(update.stockQuantity !== undefined && {
+                                stockQuantity: update.stockQuantity,
+                            }),
+                            ...(update.attributes !== undefined && {
+                                attributes:
+                                    update.attributes as Prisma.InputJsonValue,
+                            }),
+                            ...(update.position !== undefined && {
+                                position: update.position,
+                            }),
+                        },
+                    });
+                }
+
+                let imageAttribute = product.imageAttribute;
+                for (const update of payload.options ?? []) {
+                    let optionId = update.id;
+                    if (optionId) {
+                        await tx.productOption.update({
+                            where: { id: optionId },
+                            data: { name: update.name.trim() },
+                        });
+                    } else {
+                        const created = await tx.productOption.create({
+                            data: { productId, name: update.name.trim() },
+                        });
+                        optionId = created.id;
+                        const target = finalOptions.find(
+                            (option) =>
+                                option.id === "" &&
+                                option.name === update.name.trim(),
+                        );
+                        if (target) target.id = created.id;
+                    }
+
+                    if (
+                        product.imageAttribute &&
+                        update.id &&
+                        product.productOptions.find(
+                            (option) => option.id === update.id,
+                        )?.name === product.imageAttribute
+                    ) {
+                        imageAttribute = update.name.trim();
+                    }
+
+                    for (const valueUpdate of update.values ?? []) {
+                        if (valueUpdate.id) {
+                            await tx.optionValue.update({
+                                where: { id: valueUpdate.id },
+                                data: { value: valueUpdate.value.trim() },
+                            });
+                        } else {
+                            const created = await tx.optionValue.create({
+                                data: {
+                                    optionId: optionId!,
+                                    value: valueUpdate.value.trim(),
+                                },
+                            });
+                            const targetOption = finalOptions.find(
+                                (option) =>
+                                    option.name.toLowerCase() ===
+                                    update.name.trim().toLowerCase(),
+                            );
+                            const targetValue = targetOption?.values.find(
+                                (value) =>
+                                    value.id === "" &&
+                                    value.value === valueUpdate.value.trim(),
+                            );
+                            if (targetValue) targetValue.id = created.id;
+                        }
+                    }
+                }
+
+                if (imageAttribute !== product.imageAttribute) {
+                    await tx.product.update({
+                        where: { id: productId },
+                        data: { imageAttribute },
+                    });
+                }
+
+                for (const update of payload.images ?? []) {
+                    await tx.productImage.update({
+                        where: { id: update.id! },
+                        data: {
+                            ...(update.url !== undefined && {
+                                url: update.url,
+                            }),
+                            ...(update.urlName !== undefined && {
+                                urlName: update.urlName,
+                            }),
+                            ...(update.publicId !== undefined && {
+                                publicId: update.publicId,
+                            }),
+                            ...(update.type !== undefined && {
+                                type: update.type,
+                            }),
+                            ...(update.position !== undefined && {
+                                position: update.position,
+                            }),
+                            ...(update.optionValueId !== undefined && {
+                                optionValueId: update.optionValueId,
+                            }),
+                            ...(update.groupValue !== undefined && {
+                                groupValue: update.groupValue,
+                            }),
+                            ...(update.isDeleted !== undefined && {
+                                isDeleted: update.isDeleted,
+                                deletedAt: update.isDeleted ? new Date() : null,
+                            }),
+                        },
+                    });
+                }
+
+                if (
+                    payload.images?.some(
+                        (imageUpdate) => imageUpdate.isDeleted === true,
+                    )
+                ) {
+                    const remainingImages = await tx.productImage.findMany({
+                        where: { productId, isDeleted: false },
+                        orderBy: [
+                            { position: "asc" },
+                            { createdAt: "asc" },
+                            { id: "asc" },
+                        ],
+                        select: { id: true },
+                    });
+
+                    for (const [position, image] of remainingImages.entries()) {
+                        await tx.productImage.update({
+                            where: { id: image.id },
+                            data: { position },
+                        });
+                    }
+                }
+
+                if (imageRows.length > 0) {
+                    const last = await tx.productImage.aggregate({
+                        where: { productId, isDeleted: false },
+                        _max: { position: true },
+                    });
+                    const nextPosition = (last._max.position ?? -1) + 1;
+                    const optionValueMap = new Map<string, string>();
+                    const options = await tx.productOption.findMany({
+                        where: { productId },
+                        include: { values: true },
+                    });
+                    for (const option of options) {
+                        for (const value of option.values) {
+                            optionValueMap.set(
+                                `${option.name.toLowerCase()}=${value.value.toLowerCase()}`,
+                                value.id,
+                            );
+                        }
+                    }
+
+                    await tx.productImage.createMany({
+                        data: imageRows.map((row, index) => {
+                            const job = allJobs[index];
+                            let optionValueId: string | null = null;
+                            if (job?.optionName && job?.optionValue) {
+                                optionValueId =
+                                    optionValueMap.get(
+                                        `${job.optionName.toLowerCase()}=${job.optionValue.toLowerCase()}`,
+                                    ) ?? null;
+                                if (!optionValueId) {
+                                    throw new AppError(
+                                        400,
+                                        "Could not resolve uploaded image option value.",
+                                    );
+                                }
+                            }
+                            return {
+                                productId,
+                                url: row.url,
+                                urlName: row.urlName,
+                                publicId: row.publicId,
+                                type: row.type,
+                                position: nextPosition + index,
+                                groupValue: row.groupValue,
+                                optionValueId,
+                            };
+                        }),
+                    });
+                }
+
+                return tx.product.findUniqueOrThrow({
+                    where: { id: productId },
+                    include: {
+                        images: {
+                            where: { isDeleted: false },
+                            orderBy: { position: "asc" },
+                        },
+                        productOptions: { include: { values: true } },
+                        variants: {
+                            where: { isDeleted: false },
+                            orderBy: { position: "asc" },
+                        },
+                        brand: true,
+                        category: true,
+                    },
+                });
+            },
+            { maxWait: 5000, timeout: 10000 },
+        );
+
+        transactionCommitted = true;
+        await Promise.all(
+            [...publicIdsToDelete].map((publicId) =>
+                CloudinaryService.delete(publicId),
+            ),
+        );
+
+        return result;
+    } catch (error) {
+        if (!transactionCommitted) {
+            await Promise.allSettled(
+                uploadedPublicIds.map((publicId) =>
+                    CloudinaryService.delete(publicId),
+                ),
+            );
+        }
+        throw error;
+    }
+};
 
 export const ProductServices = {
     getAllProducts,
     getProductsById,
     createProduct,
+    updateProduct,
 };
